@@ -82,6 +82,8 @@ export const ADDED_FILES = [
   "scripts/fork/check-container-guard.mjs",
   // drives the Claude Code accounts route on a real server
   "scripts/fork/check-claude-accounts.mjs",
+  // static preflight on the bridge image, before spending a build on it
+  "scripts/fork/preflight-bridge-image.mjs",
 ];
 
 /** Artwork the fork reuses from upstream files; regenerated rather than carried. */
