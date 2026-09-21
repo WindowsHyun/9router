@@ -43,6 +43,10 @@ with it:
 | `--home` isolates the bridge profile | `doctor --json` against a fresh `--home` reported "Configuration is missing" for that dir only |
 | The launcher renderer builds | `bun install --cwd launcher && bun run --cwd launcher build` → `launcher/dist/index.html` |
 | `/healthz` is the bridge's health path | `src/server.ts:832`; `/v1/models` exists but may need a session |
+| The sign-in console works on a real Next server | `scripts/fork/check-bridge-console.mjs` — 12/12: boots Next, logs in through the real dashboard endpoint, serves the console, reaches **101 past Next's own live HMR upgrade listener**, round-trips bytes, holds the socket 10 s, and follows the exact URL the card is given |
+| The console is shut to anyone without a dashboard session | Same run: anonymous HTTP and anonymous WebSocket both refused. Unit tests add wrong-signature, expired, `alg:none`, not-`authenticated` and not-yet-valid — all 403 |
+| The dashboard session never reaches the bridge | Same run: no `Cookie` observed at the bridge on either the HTTP or the WebSocket half |
+| The proxy finds the JWT secret the app generated | Same run with no `JWT_SECRET` in the environment — it read `DATA_DIR/jwt-secret`, which is the production path |
 
 ---
 
@@ -257,9 +261,16 @@ the fork's code is not implicated. Untested there: a non-OneDrive path, and
 Node 22.
 
 The practical consequence for anyone working on this repo from such a machine:
-a production build cannot be produced locally, so anything that needs one —
-including running the server against the ChatGPT Web console proxy — has to
-happen in the image or on another host.
+a production build cannot be produced locally. That does **not** block
+verifying the server, though — `next dev` needs no build, and the wrapper
+loads into it through `NODE_OPTIONS=--require`, which the server process Next
+forks inherits. That is what `scripts/fork/check-bridge-console.mjs` does.
+
+(Two traps if you write something similar: `NODE_OPTIONS` is parsed
+shell-style, so a path containing a space needs quoting and backslashes are
+read as escapes — pass forward slashes. And on Windows, spawning `npx.cmd`
+without a shell is `EINVAL`; invoke `node node_modules/next/dist/bin/next`
+instead.)
 
 ### 3. How to tell it worked
 

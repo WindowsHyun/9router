@@ -72,6 +72,8 @@ export const ADDED_FILES = [
   "scripts/fork/verify-fork.mjs",
   "scripts/fork/upgrade-fork.mjs",
   "scripts/fork/export-patch.mjs",
+  // end-to-end check of the bridge console against a real Next server
+  "scripts/fork/check-bridge-console.mjs",
 ];
 
 /** Artwork the fork reuses from upstream files; regenerated rather than carried. */
