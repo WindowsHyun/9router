@@ -71,6 +71,11 @@ ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 # scripts/start-launcher.ts, runs the launcher in Vite dev mode and re-runs
 # `bun install` on every container start — which needs network at boot and
 # fails without it.
+#
+# --ignore-scripts on the launcher install belts the env var above: electron is
+# the only launcher dependency with a postinstall, and its binary is fetched
+# below, so skipping lifecycle scripts there removes the failure entirely
+# rather than relying on one variable being honoured.
 RUN git clone --depth 1 --branch "${BRIDGE_VERSION}" \
       https://github.com/miuuyy/codex-chatgpt-web . \
     && bun install --frozen-lockfile \
@@ -91,6 +96,23 @@ RUN set -eu; \
     /opt/electron/electron --version --no-sandbox
 
 ENV ELECTRON_OVERRIDE_DIST_PATH=/opt/electron
+
+# Prove Electron can actually start here, at BUILD time.
+#
+# This is the one thing that cannot be settled by reading: whether this image's
+# GTK/X/Chromium libraries are complete enough for Electron to come up under
+# Xvfb. `electron --version` does not answer it — it never initialises GTK — so
+# the smoke app opens a real hidden BrowserWindow instead. A missing library
+# fails the build here, with a reason, rather than at 3am in a CrashLoopBackOff.
+COPY smoke /opt/smoke
+RUN set -eu; \
+    Xvfb :98 -screen 0 1024x768x24 -nolisten tcp & \
+    xvfb_pid=$!; \
+    for _ in $(seq 1 60); do xdpyinfo -display :98 >/dev/null 2>&1 && break; sleep 0.25; done; \
+    xdpyinfo -display :98 >/dev/null 2>&1 || { echo "Xvfb never came up"; exit 1; }; \
+    DISPLAY=:98 ELECTRON_DISABLE_SANDBOX=1 \
+      /opt/electron/electron /opt/smoke --no-sandbox; \
+    kill "$xvfb_pid" 2>/dev/null || true
 
 # NOT /tmp: the bridge refuses to set up when its own runtime path looks
 # ephemeral ("Runtime command must not reference an ephemeral path").

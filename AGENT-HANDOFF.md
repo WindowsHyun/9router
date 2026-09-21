@@ -103,7 +103,16 @@ image has been assembled:
 | `bun run --cwd launcher build` | yes — writes `launcher/dist/index.html` |
 | the Electron release zip has `electron` at its root | yes |
 | `electron/index.js` resolves through `ELECTRON_OVERRIDE_DIST_PATH` | yes |
+| the renderer builds with `--ignore-scripts` too | yes |
 | the image as a whole | **no** |
+
+**The build now proves the one thing reading could not.** A missing GTK/X
+library would previously have shown up as a CrashLoopBackOff after deploy.
+The image build starts Xvfb and runs a tiny Electron app that opens a real
+hidden `BrowserWindow`, so an incomplete runtime fails the build, on your
+machine, with a reason. `electron --version` does not test this — it never
+initialises GTK. If that layer fails, the missing library is named in the
+error and belongs in the `apt-get install` list.
 
 ### Already hit and fixed: both provider cards showed only "Local only"
 

@@ -51,6 +51,8 @@ export const ADDED_FILES = [
   "src/shared/components/ClaudeCliAccountsCard.js",
   "docker/chatgpt-web/Dockerfile",
   "docker/chatgpt-web/entrypoint.sh",
+  "docker/chatgpt-web/smoke/main.js",
+  "docker/chatgpt-web/smoke/package.json",
   // tests — their absence means the fork is present but unproven
   "tests/unit/claude-cli-executor.test.js",
   "tests/unit/chatgpt-web-executor.test.js",
