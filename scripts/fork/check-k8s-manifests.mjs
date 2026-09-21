@@ -26,6 +26,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const require_ = createRequire(import.meta.url);
 const yaml = require_("js-yaml");
@@ -100,10 +101,35 @@ for (const pvc of byKind("PersistentVolumeClaim")) {
   }
 }
 
-// Two PVs must not point at the same NFS path, or they share one directory.
+// Two PVs must not point at exactly the same directory.
 const nfsPaths = pvs.filter((p) => p.spec.nfs).map((p) => `${p.spec.nfs.server}:${p.spec.nfs.path}`);
 check("no two PersistentVolumes share an NFS path",
   new Set(nfsPaths).size === nfsPaths.length, nfsPaths.join(", "));
+
+// Nesting one export inside another is allowed, but only where the router
+// knows to leave it alone: docker/router-entrypoint.sh prunes directories
+// named `chatgpt-web-profile` from its recursive chown. Any other nested path
+// would be walked — and re-owned — on every router start.
+// Read out of the entrypoint itself rather than restated here, so the manifest
+// and the script cannot drift apart silently.
+const routerEntrypoint = fs.readFileSync(
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "docker", "router-entrypoint.sh"),
+  "utf8",
+);
+const PRUNED_DIR = routerEntrypoint.match(/BRIDGE_PROFILE_DIR_NAME:-([A-Za-z0-9._-]+)/)?.[1];
+check("the router entrypoint declares a directory to prune", Boolean(PRUNED_DIR),
+  "docker/router-entrypoint.sh no longer names a profile directory to skip");
+for (const outer of pvs.filter((p) => p.spec.nfs)) {
+  for (const inner of pvs.filter((p) => p.spec.nfs)) {
+    if (outer === inner) continue;
+    if (outer.spec.nfs.server !== inner.spec.nfs.server) continue;
+    if (!inner.spec.nfs.path.startsWith(`${outer.spec.nfs.path}/`)) continue;
+    check(`${inner.metadata.name} nests inside ${outer.metadata.name}, and the router prunes it`,
+      inner.spec.nfs.path.split("/").pop() === PRUNED_DIR,
+      `${inner.spec.nfs.path} sits inside ${outer.spec.nfs.path}, but only a directory named `
+      + `"${PRUNED_DIR}" is skipped by the router's chown — this one would be walked every start`);
+  }
+}
 
 // The traps this deployment specifically has to avoid.
 check("the bridge has no readiness/liveness probe",
