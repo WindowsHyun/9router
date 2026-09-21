@@ -386,3 +386,56 @@ describe("claude-cli model validation", () => {
     expect(text.endsWith("data: [DONE]\n\n")).toBe(true);
   });
 });
+
+/**
+ * The routed model list was partly invented: it offered five generic rows, and
+ * omitted opusplan and the 1M-context variants entirely. Every id below was
+ * checked against the installed Claude Code (2.1.278) — an alias it does not
+ * know is refused with "isn't described by this version's model catalog".
+ */
+describe("claude-cli exposes the models the CLI actually accepts", () => {
+  const REGISTERED = {
+    "claude-cli-default": "default",
+    "claude-cli-opus": "opus",
+    "claude-cli-opus-1m": "opus[1m]",
+    "claude-cli-opusplan": "opusplan",
+    "claude-cli-sonnet": "sonnet",
+    "claude-cli-sonnet-1m": "sonnet[1m]",
+    "claude-cli-haiku": "haiku",
+    "claude-cli-fable": "fable",
+  };
+
+  it.each(Object.entries(REGISTERED))("%s → claude --model %s", (routed, upstream) => {
+    expect(resolveClaudeCliModel(routed)).toBe(upstream);
+  });
+
+  it("puts the 1M variants on argv with their brackets intact", () => {
+    // CLAUDE_CLI_MODEL_PATTERN has to admit "[" and "]" or the 1M window is
+    // unreachable — the CLI's own wording is "/model sonnet[1m]".
+    const args = buildClaudeCliArgs({ model: "claude-cli-sonnet-1m", system: "s" });
+    expect(args).toContain("--model");
+    expect(args[args.indexOf("--model") + 1]).toBe("sonnet[1m]");
+  });
+
+  it("offers opusplan, which Claude Code treats as a mode rather than a model", () => {
+    expect(resolveClaudeCliModel("claude-cli-opusplan")).toBe("opusplan");
+  });
+
+  it("declares the 1M rows with a 1M context window, not 200k", async () => {
+    const registry = await import("open-sse/providers/registry/claude-cli.js");
+    const models = registry.default?.models || registry.models;
+    const byId = Object.fromEntries(models.map((m) => [m.id, m]));
+    expect(byId["claude-cli-sonnet-1m"].contextLength).toBe(1_000_000);
+    expect(byId["claude-cli-opus-1m"].contextLength).toBe(1_000_000);
+    expect(byId["claude-cli-opus"].contextLength).toBe(200_000);
+  });
+
+  it("registers exactly the ids it maps — no row without a mapping", async () => {
+    const registry = await import("open-sse/providers/registry/claude-cli.js");
+    const models = registry.default?.models || registry.models;
+    for (const { id } of models) {
+      expect(resolveClaudeCliModel(id), `${id} has no upstream mapping`).toBeTruthy();
+    }
+    expect(models.map((m) => m.id).sort()).toEqual(Object.keys(REGISTERED).sort());
+  });
+});

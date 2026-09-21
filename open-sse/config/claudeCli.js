@@ -90,9 +90,22 @@ export const CLAUDE_CLI_INLINE_SYSTEM_PROMPT =
 
 // Routed model id → value passed to `claude --model`. Aliases stay as-is so the
 // CLI keeps resolving "latest" itself; pinned ids pass through unchanged.
+//
+// Every value here was checked against the installed CLI (2.1.278) rather than
+// assumed: an unknown one is refused with "isn't described by this version's
+// model catalog", and none of these are.
+//
+//   opusplan   — Opus while planning, Sonnet to execute. A real Claude Code
+//                mode ("mode_dependent_setting"), and previously missing here.
+//   *[1m]      — the 1M-token context window. The CLI documents the suffix
+//                itself: "/model sonnet[1m] for a 1M context window".
+//                CLAUDE_CLI_MODEL_PATTERN already admits the brackets.
 export const CLAUDE_CLI_UPSTREAM_MODELS = {
   "claude-cli-opus": "opus",
+  "claude-cli-opus-1m": "opus[1m]",
+  "claude-cli-opusplan": "opusplan",
   "claude-cli-sonnet": "sonnet",
+  "claude-cli-sonnet-1m": "sonnet[1m]",
   "claude-cli-haiku": "haiku",
   "claude-cli-fable": "fable",
   "claude-cli-default": "default",
