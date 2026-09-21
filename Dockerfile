@@ -14,7 +14,28 @@ RUN npm install --registry=https://registry.npmmirror.com
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+
+# The Next/webpack build is this image's memory high-water mark. If it dies
+# partway through compiling with:
+#
+#   FATAL ERROR: Ineffective mark-compacts near heap limit
+#   Allocation failed - JavaScript heap out of memory
+#
+# then the builder's heap is the problem, not the code. Raise it:
+#
+#   docker build --build-arg NODE_BUILD_HEAP_MB=8192 .
+#
+# Deliberately empty by default, which leaves Node to size its own old space
+# exactly as it does today — this image is known to build as-is, and pinning a
+# number lower than the default Node picks would *introduce* the failure above.
+# The build host needs that much RAM actually free, or the kernel kills the
+# process and you get `Killed` instead of V8's message.
+ARG NODE_BUILD_HEAP_MB=
+RUN if [ -n "$NODE_BUILD_HEAP_MB" ]; then \
+      export NODE_OPTIONS="--max-old-space-size=${NODE_BUILD_HEAP_MB}"; \
+      echo "build heap: ${NODE_BUILD_HEAP_MB} MB"; \
+    fi; \
+    npm run build
 
 FROM ${NODE_IMAGE} AS runner
 WORKDIR /app

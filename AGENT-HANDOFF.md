@@ -226,10 +226,28 @@ tab (the router proxies noVNC at `/api/cli-tools/chatgpt-web-vnc`; see
 Nobody has driven that UI over noVNC yet. If the launcher expects a native
 file dialog or a system keyring, that is where it will show.
 
-**Router build memory.** The router image runs a Next.js production build.
-Give Docker at least 4 GB. (A 4 GB heap was enough on a normal filesystem;
-it OOM'd only on a OneDrive-synced path, which does not apply inside a
-container.)
+**Router build memory.** The Next.js production build is the memory high-water
+mark of this image. If `docker build .` dies partway through compiling with:
+
+```
+FATAL ERROR: Ineffective mark-compacts near heap limit
+Allocation failed - JavaScript heap out of memory
+```
+
+that is the builder's heap, not the code. Raise it:
+`docker build --build-arg NODE_BUILD_HEAP_MB=8192 .` With too little RAM
+actually free the kernel kills the process instead, and you get `Killed`
+rather than the message above.
+
+The Dockerfile deliberately sets **no** heap by default, so the image builds
+exactly as it did before this knob existed.
+
+*Seen once, outside a container, and probably not your problem:* this OOM'd at
+Node's own default (4288 MB on that machine, 64 GB RAM) on a repo checkout
+under a OneDrive-synced path with a stale `.next/dev` cache present, on Node 24
+— the image uses `node:22-alpine`. Peak was over 5.8 GB once the heap was
+raised to 8 GB. Recorded because the symptom is alarming and the cause is
+boring; it has never been reproduced inside the image.
 
 ### 3. How to tell it worked
 
