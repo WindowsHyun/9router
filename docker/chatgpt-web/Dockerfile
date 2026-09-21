@@ -74,7 +74,7 @@ ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 RUN git clone --depth 1 --branch "${BRIDGE_VERSION}" \
       https://github.com/miuuyy/codex-chatgpt-web . \
     && bun install --frozen-lockfile \
-    && bun install --frozen-lockfile --cwd launcher \
+    && bun install --frozen-lockfile --cwd launcher --ignore-scripts \
     && bun run --cwd launcher build
 
 # Fetch the Electron the launcher's lockfile actually resolved to, rather than
@@ -88,7 +88,7 @@ RUN set -eu; \
     unzip -q /tmp/electron.zip -d /opt/electron; \
     rm /tmp/electron.zip; \
     chmod +x /opt/electron/electron; \
-    /opt/electron/electron --version
+    /opt/electron/electron --version --no-sandbox
 
 ENV ELECTRON_OVERRIDE_DIST_PATH=/opt/electron
 
