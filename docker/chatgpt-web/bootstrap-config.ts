@@ -43,13 +43,30 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error(`BRIDGE_PORT is not a valid port: ${process.env.BRIDGE_PORT}`);
 }
 
+/**
+ * Headed unless asked otherwise, and that default is deliberate.
+ *
+ * `headed: true` is hardcoded in the bridge's own defaultConfig(), there is no
+ * setup flag to change it, and headless is not documented anywhere upstream —
+ * so headless is a path they have never run. Two things could go wrong on it:
+ * chatgpt.com's anti-automation treating a headless browser as a bot, and the
+ * DOM automation itself depending on real layout. Neither has been tested here
+ * either.
+ *
+ * The heavy thing was never the browser being visible; it was an Electron
+ * launcher, a GUI and a VNC stack resident forever. Running headful on a bare
+ * Xvfb costs tens of megabytes over headless and keeps the mode upstream
+ * actually exercises. BRIDGE_HEADLESS=1 drops even that, for anyone who wants
+ * the last of it and can risk the untested path.
+ */
+const headless = /^(1|true|yes)$/i.test(String(process.env.BRIDGE_HEADLESS || "").trim());
+
 /** The shape this image runs, applied to a fresh or an inherited config. */
-function headless(config: AppConfig): AppConfig {
+function forImage(config: AppConfig): AppConfig {
   return {
     ...config,
     browserHost: "managed-chrome",
-    // The whole point: no display in steady state.
-    headed: false,
+    headed: !headless,
     chromeExecutablePath: chromePath,
     port,
     // Derived through their own helper so it gets their durability checks
@@ -73,7 +90,7 @@ if (existsSync(configPath)) {
   // start on a config we are about to replace would be perverse.
   const existing = JSON.parse(readFileSync(configPath, "utf8")) as AppConfig;
   const wasLauncher = existing.browserHost === "launcher";
-  next = headless(existing);
+  next = forImage(existing);
   // A launcher config carries a descriptor path that means nothing here, and
   // their parser rejects the field when the host is not "launcher".
   delete (next as { browserHostDescriptorPath?: string }).browserHostDescriptorPath;
@@ -81,7 +98,7 @@ if (existsSync(configPath)) {
     ? "migrated from the launcher browser host (a new ChatGPT sign-in is required)"
     : "updated";
 } else {
-  next = headless(defaultConfig("browser-only"));
+  next = forImage(defaultConfig("browser-only"));
   action = "created";
 }
 
