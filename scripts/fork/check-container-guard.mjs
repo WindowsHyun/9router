@@ -20,6 +20,10 @@
  * twice: once as a plain host (expect the failure) and once with
  * KUBERNETES_SERVICE_HOST set, as every pod has (expect it to work).
  *
+ * Note: booting `next dev` makes Next re-add its agent-rules block to
+ * CLAUDE.md. That is expected and not this script's doing — `git checkout --
+ * CLAUDE.md` afterwards, or upgrade-fork.mjs will refuse the dirty tree.
+ *
  * Takes a few minutes, needs port 21994 free, touches no real 9Router state.
  */
 import { spawn } from "node:child_process";

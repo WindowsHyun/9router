@@ -21,6 +21,10 @@
  * JWT_SECRET is set, so the proxy has to find the secret the app generated in
  * DATA_DIR — a scratch directory, removed at the end.
  *
+ * Note: booting `next dev` makes Next re-add its agent-rules block to
+ * CLAUDE.md. That is expected and not this script's doing — `git checkout --
+ * CLAUDE.md` afterwards, or upgrade-fork.mjs will refuse the dirty tree.
+ *
  * Takes a few minutes, needs ports 21993 and 46081 free, and touches no real
  * 9Router state. Exits non-zero on the first thing that does not hold.
  */
