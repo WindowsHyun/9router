@@ -176,6 +176,43 @@ read as offline. Three separate causes, all now fixed:
    and a genuinely missing binary looked identical, which sent debugging in
    the wrong direction. The HTTP failure is now reported as itself.
 
+### Already hit and fixed: setup step 2, "Browser helper verification exited with status 1"
+
+Reported from a real deployment, after signing in to chatgpt.com succeeded.
+Setup step 1 went green and step 2 failed with:
+
+```
+Error invoking remote method 'launcher:browser-smoke':
+Error: Browser helper verification exited with status 1
+```
+
+Nothing to do with the sandbox or a missing library — the file the launcher
+spawns was not in the image. `bun run --cwd launcher build` is
+`typecheck && vite build`; it builds the **renderer** and nothing else. The
+browser helper has its own build script, which upstream runs from
+`launcher dev` (`launcher/scripts/dev.cjs`) and bundles into resources when
+packaging. This image does neither: it runs unpackaged, and that is the branch
+which reads the helper off disk —
+
+```js
+const BROWSER_HELPER_PATH = app.isPackaged
+  ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
+  : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
+```
+
+— so it spawned a path that did not exist and the child exited 1 immediately.
+
+The Dockerfile now runs `bun run scripts/build-browser-helper.ts` and asserts
+the output exists, so it cannot go missing quietly again. Verified before
+committing, against the real v5.0.8 source: the build emits a 163 KB
+`.launcher-runtime/browser-helper.cjs` that parses as CJS and leaves
+`playwright-core` external — which resolves, because it is a declared root
+dependency (1.62.0) with no install scripts, so `bun install --frozen-lockfile`
+provides it and nothing downloads a browser.
+
+The bridge runtime itself needs no equivalent fix: unpackaged,
+`runtime-command.cjs` resolves it to `bun run src/cli.ts`, and bun is on PATH.
+
 ### Already hit and fixed: Electron's postinstall
 
 The first real build failed here, so it is written down rather than left to be
