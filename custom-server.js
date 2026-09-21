@@ -103,24 +103,34 @@ http.createServer = (...args) => {
   server.once("listening", () => {
     startBackgroundTokenRefreshFromCustomServer();
   });
-  // Node only emits "upgrade" when something is actually listening for it
-  // (_http_server.js checks listenerCount first); with no listener it closes
-  // the socket, and the emit override below never runs. So the listener is
-  // registered here rather than relying on Next to have registered one.
+  // Registering a listener is the point of this, not what it does: Node only
+  // emits "upgrade" when one exists (_http_server.js checks listenerCount
+  // first) and otherwise closes the socket, so without this the emit override
+  // below never runs at all. The console's socket is handled *in* that
+  // override, which returns without calling origEmit — so it never reaches
+  // this listener, nor Next's.
   //
-  // noVNC's socket is bridged from this listener because a Next route handler
-  // cannot upgrade a connection. h2c keeps its own branch in the emit override,
-  // which now runs on servers where nothing else listens for upgrades.
-  server.on("upgrade", (req, socket, head) => {
-    if (vncProxy && vncProxy.handleUpgrade(req, socket, head)) return;
-    // Preserve Node's default for upgrades nobody handles, without stealing
-    // sockets from another listener that may know what to do with them.
+  // That exclusivity matters: Next's standalone server registers its own
+  // upgrade listener (start-server.js) and Node dispatches an event to every
+  // listener, so a socket handled here as well would be raced by Next's
+  // handler ending it. Handling it in the override is how the h2c branch
+  // already avoids that.
+  server.on("upgrade", (req, socket) => {
+    // Only upgrades nobody handled reach this. Preserve Node's default for
+    // them, without stealing sockets from a listener that may want them.
     if (server.listenerCount("upgrade") === 1) socket.destroy();
   });
   const origEmit = server.emit;
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
   server.emit = function (event, ...eventArgs) {
     const [req, socket, head] = eventArgs;
+    // The console's WebSocket, handled here rather than in a listener so that
+    // no other upgrade listener — Next's included — is invoked for it.
+    if (event === "upgrade" && req && req.headers && vncProxy
+      && String(req.headers.upgrade || "").toLowerCase() === "websocket"
+      && vncProxy.handleUpgrade(req, socket, head)) {
+      return true;
+    }
     if (event !== "upgrade" || String(req.headers.upgrade || "").toLowerCase() !== "h2c") {
       return origEmit.call(this, event, ...eventArgs);
     }

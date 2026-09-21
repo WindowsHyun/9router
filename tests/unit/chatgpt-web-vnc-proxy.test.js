@@ -324,8 +324,128 @@ describe("server wiring", () => {
     expect(source).toContain("vncProxy.handleUpgrade(req, socket, head)");
   });
 
-  it("ships the proxy beside custom-server.js in both build paths", () => {
+  it("handles the console upgrade inside the emit override, not in a listener", () => {
+    // Next's standalone server registers its own upgrade listener, and Node
+    // dispatches to every listener — so a socket claimed from a listener gets
+    // raced by Next's handler ending it (connects, then drops). Claiming it in
+    // the emit override, which returns without calling origEmit, is what keeps
+    // it exclusive. Behaviour is covered below; this pins the structure.
+    const source = read("custom-server.js");
+    expect(source.indexOf("server.emit = function"))
+      .toBeLessThan(source.indexOf("vncProxy.handleUpgrade"));
+  });
+
+  it("ships the proxy beside custom-server.js in every build path", () => {
     expect(read("scripts/copy-standalone-assets.mjs")).toContain("bridge-vnc-proxy.cjs");
     expect(read("Dockerfile")).toContain("bridge-vnc-proxy.cjs");
+    expect(read("cli/scripts/build-cli.js")).toContain("bridge-vnc-proxy.cjs");
+  });
+});
+
+/**
+ * The console's socket must be claimed exclusively. Next's standalone server
+ * registers its own upgrade listener (start-server.js), Node dispatches an
+ * upgrade to every listener, and Next's handler ends sockets it cannot route —
+ * so sharing the event means the console connects and then drops. This wires a
+ * server the way custom-server.js wires one, with a hostile second listener
+ * standing in for Next.
+ */
+describe("exclusive ownership of the console socket", () => {
+  let bridge;
+  let server;
+  let port;
+  let hostileSaw;
+
+  beforeAll(async () => {
+    bridge = http.createServer((_req, res) => res.end("ok"));
+    bridge.on("upgrade", (req, socket) => {
+      const accept = crypto.createHash("sha1")
+        .update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+        .digest("base64");
+      socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        + `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+      );
+      socket.on("data", (chunk) => socket.write(chunk));
+    });
+    await new Promise((r) => bridge.listen(0, "127.0.0.1", r));
+
+    const proxy = createBridgeVncProxy({
+      JWT_SECRET: SECRET,
+      CHATGPT_WEB_BASE_URL: "http://127.0.0.1:17841",
+      CHATGPT_WEB_VNC_PORT: String(bridge.address().port),
+    });
+
+    server = http.createServer((_req, res) => res.end("next-handled"));
+    server.on("upgrade", (_req, socket) => {
+      if (server.listenerCount("upgrade") === 1) socket.destroy();
+    });
+    const origEmit = server.emit;
+    server.emit = function emit(event, ...args) {
+      const [req, socket, head] = args;
+      if (event === "upgrade" && req?.headers
+        && String(req.headers.upgrade || "").toLowerCase() === "websocket"
+        && proxy.handleUpgrade(req, socket, head)) {
+        return true;
+      }
+      return origEmit.call(this, event, ...args);
+    };
+    hostileSaw = [];
+    server.on("upgrade", (req, socket) => {
+      hostileSaw.push(req.url);
+      socket.destroy();
+    });
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    port = server.address().port;
+  });
+
+  afterAll(() => {
+    bridge?.close();
+    server?.close();
+  });
+
+  const open = (urlPath, cookie, holdMs = 0) => new Promise((resolve, reject) => {
+    let status = 0;
+    let closedEarly = false;
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const socket = net.connect(port, "127.0.0.1", () => {
+      socket.write(
+        `GET ${urlPath} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n`
+        + "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        + `Sec-WebSocket-Key: ${crypto.randomBytes(16).toString("base64")}\r\n`
+        + "Sec-WebSocket-Version: 13\r\n"
+        + (cookie ? `Cookie: ${cookie}\r\n` : "") + "\r\n",
+      );
+    });
+    let buf = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      const end = buf.indexOf("\r\n\r\n");
+      if (end !== -1 && !status) {
+        status = Number(buf.slice(0, end).toString().split(" ")[1]);
+        if (!holdMs) { socket.destroy(); done({ status, closedEarly }); }
+      }
+    });
+    socket.on("close", () => { closedEarly = true; done({ status, closedEarly }); });
+    socket.on("error", reject);
+    if (holdMs) setTimeout(() => { socket.destroy(); done({ status, closedEarly }); }, holdMs);
+  });
+
+  it("keeps the console upgrade away from every other listener", async () => {
+    const res = await open(`${CHATGPT_WEB_VNC_PREFIX}/websockify`, `auth_token=${mintToken()}`);
+    expect(res.status).toBe(101);
+    expect(hostileSaw).not.toContain(`${CHATGPT_WEB_VNC_PREFIX}/websockify`);
+  });
+
+  it("stays open rather than being ended by the other listener", async () => {
+    const res = await open(`${CHATGPT_WEB_VNC_PREFIX}/websockify`, `auth_token=${mintToken()}`, 1500);
+    expect(res.status).toBe(101);
+    expect(res.closedEarly).toBe(false);
+  });
+
+  it("still lets unrelated upgrades through to the other listener", async () => {
+    await open("/_next/webpack-hmr", `auth_token=${mintToken()}`).catch(() => {});
+    expect(hostileSaw).toContain("/_next/webpack-hmr");
   });
 });

@@ -122,6 +122,9 @@ export default function ChatGptWebBridgeCard() {
       .then((res) => res.json())
       .then((data) => {
         setMessage(data.error || data.hint || "Opened the bridge window.");
+        // A bridge appeared between mount and this click: surface its console
+        // link rather than leaving the operator with a hint and no way in.
+        if (data.vncUrl) setStatus((s) => ({ ...(s || {}), vncUrl: data.vncUrl }));
         if (!data.error) waitForSignIn(baseUrl);
         return load(baseUrl);
       })
