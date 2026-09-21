@@ -23,9 +23,12 @@ On a desktop the interactive login still works and each account keeps its own
 Claude Code config directory.
 
 **ChatGPT Web** — a sidecar container runs the official launcher on a virtual
-display and publishes it over noVNC. Open `http://localhost:6080/vnc.html`
-once, sign in to chatgpt.com, and the session persists in a volume; 9Router
-reaches the bridge over the compose network. This is the launcher rather than
+display and publishes it over noVNC, and the router serves that console on its
+own origin behind the dashboard session (`bridge-vnc-proxy.cjs`). Press
+**Login** in the dashboard once, sign in to chatgpt.com, and the session
+persists in a volume; 9Router reaches the bridge over the compose network.
+The proxy replaced a Login button that called `open` server-side — which opens
+a browser on the machine running Node, and so did nothing in a container. This is the launcher rather than
 the bun CLI because upstream gates terminal-only setup on macOS
 (`src/setup.ts`: *"Terminal-only managed Chrome setup currently requires
 macOS"*) unless the browser is launcher-owned.

@@ -53,6 +53,8 @@ export const ADDED_FILES = [
   "docker/chatgpt-web/entrypoint.sh",
   "docker/chatgpt-web/smoke/main.js",
   "docker/chatgpt-web/smoke/package.json",
+  // serves the bridge's sign-in console on 9Router's own origin
+  "bridge-vnc-proxy.cjs",
   // tests — their absence means the fork is present but unproven
   "tests/unit/claude-cli-executor.test.js",
   "tests/unit/chatgpt-web-executor.test.js",
@@ -60,6 +62,7 @@ export const ADDED_FILES = [
   "tests/unit/quota-autoping-cron.test.js",
   "tests/unit/forced-sse-client-format.test.js",
   "tests/unit/agent-skills.test.js",
+  "tests/unit/chatgpt-web-vnc-proxy.test.js",
   "tests/real/claude-cli.real.test.js",
   // docs + tooling
   "AGENT-HANDOFF.md",
@@ -165,8 +168,23 @@ export const PATCHED_FILES = [
     hint: "The bridge URL was loopback-only, which made the supported Docker layout (bridge as a sibling container) impossible. It now accepts loopback, container names and private ranges, and still refuses public hosts and link-local 169.254 (cloud metadata).",
   },
   {
+    path: "custom-server.js",
+    markers: ["bridge-vnc-proxy.cjs", 'server.on("upgrade"'],
+    hint: "Serves the ChatGPT Web sign-in console on this origin, because a Next route handler cannot upgrade noVNC's WebSocket. The server.on(\"upgrade\") registration is load-bearing: Node only emits that event when a listener exists, so without it neither the console nor the pre-existing h2c downgrade ever runs. Keep both the handleRequest call inside the wrapped handler and the upgrade listener.",
+  },
+  {
+    path: "cli/scripts/build-cli.js",
+    markers: ["bridge-vnc-proxy.cjs"],
+    hint: "The packaged CLI copies custom-server.js explicitly, so the console proxy needs copying too. Non-fatal on purpose - a CLI with no bridge configured has nothing to serve.",
+  },
+  {
+    path: "scripts/copy-standalone-assets.mjs",
+    markers: ["bridge-vnc-proxy.cjs"],
+    hint: "bridge-vnc-proxy.cjs must land beside custom-server.js in the standalone build. custom-server.js require()s it in a try/catch, so a missing copy does not crash the server - it silently disables the sign-in console.",
+  },
+  {
     path: "Dockerfile",
-    markers: ["claude-code", "CLI_CLAUDE_BIN"],
+    markers: ["claude-code", "CLI_CLAUDE_BIN", "bridge-vnc-proxy.cjs"],
     hint: "Bundles a pinned @anthropic-ai/claude-code so the claude-cli provider works in the image with nothing else installed, and sets CLI_CLAUDE_BIN and CLAUDE_CONFIG_DIR. (The apk/npm mirror build args are NOT on this branch - they were part of the security work that was dropped.)",
   },
   {
@@ -257,6 +275,7 @@ export const FORK_TESTS = [
   "unit/agent-skills.test.js",
   "unit/claude-cli-executor.test.js",
   "unit/chatgpt-web-executor.test.js",
+  "unit/chatgpt-web-vnc-proxy.test.js",
   "unit/concurrency-gate.test.js",
   "unit/quota-autoping-cron.test.js",
   "unit/forced-sse-client-format.test.js",

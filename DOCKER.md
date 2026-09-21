@@ -95,16 +95,21 @@ docker compose up -d        # builds the bridge image on first run (a few minute
 
 Then, **once**:
 
-1. Open http://localhost:6080/vnc.html
+1. Open the dashboard → **ChatGPT Web bridge** → **Login**
 2. Finish setup in the launcher window and sign in to chatgpt.com
 3. Close the tab — the session is kept in the `9router-chatgpt-web-profile` volume
 
-9Router reaches the bridge at `http://chatgpt-web:17841` over the compose
-network; `CHATGPT_WEB_BASE_URL` is already set for you.
+The card flips to **Signed in** by itself once the session exists; there is
+nothing else to configure. 9Router reaches the bridge at
+`http://chatgpt-web:17841` over the compose network and serves the launcher
+window through its own origin at `/api/cli-tools/chatgpt-web-vnc`, behind
+your dashboard login.
 
 Port `6080` is bound to `127.0.0.1` on purpose: that window is a signed-in
-ChatGPT session and must not be reachable from the rest of your network.
-Port `17841` is not published at all — only 9Router needs it.
+ChatGPT session with no authentication of its own, so it must not be
+reachable from the rest of your network. Opening it directly is a debugging
+fallback; the dashboard's Login button is the normal path. Port `17841` is
+not published at all — only 9Router needs it.
 
 **Already running the desktop launcher on your host?** Skip the sidecar and
 point the router at it instead:

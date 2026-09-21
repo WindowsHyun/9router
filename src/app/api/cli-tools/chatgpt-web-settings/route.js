@@ -9,6 +9,7 @@ import {
   CHATGPT_WEB_MODELS_PATH,
   CHATGPT_WEB_MODEL_PREFIX,
   assertBridgeBaseUrl,
+  chatGptWebVncUrl,
   resolveChatGptWebBaseUrl,
 } from "open-sse/config/chatgptWeb.js";
 
@@ -95,6 +96,10 @@ export async function GET(request) {
       baseUrlSource: source,
       models: [],
       installUrl: CHATGPT_WEB_INSTALL_URL,
+      // The console is proxied whenever a bridge is configured, so it stays
+      // available while the bridge is still starting — which is exactly when
+      // someone needs to look at the launcher window.
+      vncUrl: chatGptWebVncUrl(),
       error: health.error || `Daemon not reachable (HTTP ${health.status})`,
       hint: `Nothing answered /healthz at ${baseUrl} (from ${source}).`,
     });
@@ -115,10 +120,11 @@ export async function GET(request) {
     signedIn: models.length > 0,
     models,
     installUrl: CHATGPT_WEB_INSTALL_URL,
+    vncUrl: chatGptWebVncUrl(),
     error: catalog.ok ? null : `Model catalog unavailable (HTTP ${catalog.status})`,
     hint: models.length > 0
       ? null
-      : "Daemon is up but exposes no chatgpt-web/* model — sign in to ChatGPT inside the launcher window.",
+      : "Daemon is up but exposes no chatgpt-web/* model — click Login and sign in to ChatGPT in the launcher window.",
   });
 }
 
@@ -139,6 +145,22 @@ export async function POST(request) {
   }
 
   const health = await probe(`${baseUrl}${CHATGPT_WEB_HEALTH_PATH}`);
+
+  // With a bridge configured, the sign-in window is reachable through this
+  // origin and the caller should open it in their own browser. `open` below
+  // launches a browser on the *server*, which is right for a desktop install
+  // and useless in a container — no DISPLAY, no xdg-open — where it made this
+  // button appear to do nothing at all.
+  const vncUrl = chatGptWebVncUrl();
+  if (vncUrl) {
+    return NextResponse.json({
+      opened: false,
+      vncUrl,
+      running: health.ok,
+      hint: "Opening the bridge console. Finish the launcher setup and sign in to ChatGPT, then come back.",
+    });
+  }
+
   // Only ever a validated loopback origin or the fixed install page — never a
   // caller-chosen destination opened in the operator's browser.
   const target = health.ok ? baseUrl : CHATGPT_WEB_INSTALL_URL;

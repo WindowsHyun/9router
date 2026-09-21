@@ -10,8 +10,11 @@
 #     the browser is launcher-owned, so setup has to happen inside the launcher
 #     too.
 #
-# That leaves exactly one human step: open noVNC, finish setup and sign in to
-# chatgpt.com. The profile volume keeps it signed in across restarts.
+# That leaves exactly one human step: press Login in the 9Router dashboard,
+# which serves this display through the router's own origin, then finish setup
+# and sign in to chatgpt.com. The profile volume keeps it signed in across
+# restarts. Port 6080 below is reachable directly too, but only as a debugging
+# fallback — it has no authentication of its own.
 set -euo pipefail
 
 BRIDGE_PORT="${BRIDGE_PORT:-17841}"
@@ -46,7 +49,7 @@ cleanup() {
 trap cleanup TERM INT
 
 if [ ! -f "$PROFILE/config.json" ]; then
-  log "no config yet — open http://<host>:${VNC_PORT}/vnc.html and complete setup in the launcher"
+  log "no config yet — in the 9Router dashboard: ChatGPT Web bridge → Login, then complete setup in the launcher"
 else
   log "config found; the launcher will start the bridge on :${BRIDGE_PORT}"
 fi

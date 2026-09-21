@@ -17,7 +17,7 @@ on. Everything below marked NOT VERIFIED is a real gap, not a formality.
 | Service | What it is | Ports |
 |---|---|---|
 | `9router` | the router, **built from this repo** | 20128 |
-| `chatgpt-web` | the ChatGPT Web bridge, built from `docker/chatgpt-web/` | 17841 (internal), 6080 (noVNC, loopback only) |
+| `chatgpt-web` | the ChatGPT Web bridge, built from `docker/chatgpt-web/` | 17841 (internal), 6080 (noVNC — reached through the router's proxy, not published) |
 | `headroom` | optional context compressor, unchanged from upstream | 8787 |
 
 Two providers need something that is not the router itself, and both now ship
@@ -63,9 +63,12 @@ docker push harbor.example.com/library/9router:<tag>
 docker push harbor.example.com/library/9router-chatgpt-web:v5.0.8
 # then bump the router tag in deployment.yaml and let ArgoCD sync
 
-# 3. sign in to chatgpt.com, once. noVNC is not a Service by design.
-kubectl -n <ns> port-forward deploy/nine-router 6080:6080
-#   → http://localhost:6080/vnc.html → finish setup → sign in
+# 3. sign in to chatgpt.com, once — in the dashboard, no kubectl needed:
+#      Dashboard → ChatGPT Web bridge → Login. The router proxies the
+#      launcher window on its own origin, behind the dashboard session.
+#      (Fallback if that proxy is ever disabled:
+#       kubectl -n <ns> port-forward deploy/nine-router 6080:6080
+#       → http://localhost:6080/vnc.html)
 
 # 4. confirm
 kubectl -n <ns> exec deploy/nine-router -c chatgpt-web -- \
@@ -216,8 +219,10 @@ obvious next hardening step.
 starting Electron. If Electron exits instantly, the display was not up — raise
 the retry count in `entrypoint.sh`.
 
-**Finishing setup in the launcher UI.** The one human step is
-`http://localhost:6080/vnc.html` → complete setup → sign in to chatgpt.com.
+**Finishing setup in the launcher UI.** The one human step is Dashboard →
+ChatGPT Web bridge → **Login**, which opens the launcher window in a browser
+tab (the router proxies noVNC at `/api/cli-tools/chatgpt-web-vnc`; see
+`bridge-vnc-proxy.cjs`). Complete setup there and sign in to chatgpt.com.
 Nobody has driven that UI over noVNC yet. If the launcher expects a native
 file dialog or a system keyring, that is where it will show.
 
@@ -264,12 +269,19 @@ opens a terminal against a fresh config directory.
 
 ### ChatGPT Web
 
-Open `http://localhost:6080/vnc.html` once and sign in. The profile lives in
-the `9router-chatgpt-web-profile` volume and survives restarts.
+Dashboard → ChatGPT Web bridge → **Login**, once. The profile lives in the
+`9router-chatgpt-web-profile` volume and survives restarts.
 
-**Port 6080 must stay bound to `127.0.0.1`.** It exposes a signed-in ChatGPT
-session with no authentication of its own. If you need it remotely, tunnel it
-(`ssh -L 6080:localhost:6080`), do not publish it.
+The router proxies the launcher's noVNC console at
+`/api/cli-tools/chatgpt-web-vnc` (`bridge-vnc-proxy.cjs`, wired up in
+`custom-server.js`). It exists because the old Login button called the `open`
+npm package **server-side** — which opens a browser on the machine running
+Node, so in a container it did nothing at all.
+
+**Port 6080 still must not be published.** It has no authentication of its
+own; the proxy is what adds it, and it always requires a dashboard session
+regardless of `requireLogin`. Reaching :6080 directly stays a debugging
+fallback (`ssh -L` / `kubectl port-forward`), not the normal path.
 
 ---
 
@@ -294,8 +306,16 @@ volumeMounts:
 ```
 
 **3. noVNC must not be a Service.** It is an unauthenticated signed-in
-session. Do not expose it through an Ingress. Reach it with
-`kubectl port-forward` when signing in, and leave it on the pod otherwise.
+session. Do not expose it through an Ingress or a Service — reach it through
+the router's authenticated proxy (Dashboard → ChatGPT Web bridge → Login),
+which needs no cluster access at all. `kubectl port-forward` to :6080 remains
+a debugging fallback only.
+
+With the bridge as a **sidecar** (same pod), the proxy reaches it over
+loopback with `CHATGPT_WEB_BASE_URL=http://127.0.0.1:17841` and nothing else
+to configure. As a **separate Deployment**, point that variable at its
+Service; the console port is derived from the same host, so override
+`CHATGPT_WEB_VNC_PORT` only if you moved it off 6080.
 
 **4. The bridge URL.** Set `CHATGPT_WEB_BASE_URL` to the in-cluster service,
 e.g. `http://chatgpt-web.default.svc.cluster.local:17841`. 9Router accepts

@@ -6,6 +6,30 @@ const { pathToFileURL } = require("url");
 
 const origCreate = http.createServer.bind(http);
 
+// Serves the ChatGPT Web bridge's noVNC console on this origin so signing in
+// needs nothing but the dashboard. Null unless a bridge is configured, and it
+// requires a dashboard session of its own — Next's middleware never sees these
+// requests, because they are answered before Next is called. See the module.
+let vncProxy = null;
+try {
+  const { createBridgeVncProxy } = require("./bridge-vnc-proxy.cjs");
+  // Null when no bridge is configured, which is the normal desktop case.
+  vncProxy = createBridgeVncProxy();
+  if (vncProxy) {
+    console.log(
+      `[bridge-vnc] proxying ${vncProxy.prefix} → ${vncProxy.target.host}:${vncProxy.target.port}`,
+    );
+  }
+} catch (e) {
+  // A broken console must never stop the router from serving traffic. A build
+  // that simply did not ship the file is expected and stays quiet; anything
+  // else is a real fault and is worth saying out loud.
+  if (!e || e.code !== "MODULE_NOT_FOUND") {
+    console.error("[bridge-vnc] disabled:", e && e.message ? e.message : e);
+  }
+  vncProxy = null;
+}
+
 // Per-process secret proving x-9r-real-ip was stamped below rather than sent by the client.
 // A bare `next start` / `next dev` never loads this file, so it cannot produce a matching
 // header even though the env var is inherited by child processes. Named like x-9r-cli-token
@@ -70,11 +94,28 @@ http.createServer = (...args) => {
     req.headers["x-9r-real-ip"] = ip;
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
     if (viaProxy) req.headers["x-9r-via-proxy"] = "1";
+    // Answered here, not by Next: the console's WebSocket cannot be upgraded
+    // from a route handler, so its HTTP half is served from the same place.
+    if (vncProxy && vncProxy.handleRequest(req, res)) return undefined;
     return handler(req, res);
   };
   const server = origCreate(...rest, wrapped);
   server.once("listening", () => {
     startBackgroundTokenRefreshFromCustomServer();
+  });
+  // Node only emits "upgrade" when something is actually listening for it
+  // (_http_server.js checks listenerCount first); with no listener it closes
+  // the socket, and the emit override below never runs. So the listener is
+  // registered here rather than relying on Next to have registered one.
+  //
+  // noVNC's socket is bridged from this listener because a Next route handler
+  // cannot upgrade a connection. h2c keeps its own branch in the emit override,
+  // which now runs on servers where nothing else listens for upgrades.
+  server.on("upgrade", (req, socket, head) => {
+    if (vncProxy && vncProxy.handleUpgrade(req, socket, head)) return;
+    // Preserve Node's default for upgrades nobody handles, without stealing
+    // sockets from another listener that may know what to do with them.
+    if (server.listenerCount("upgrade") === 1) socket.destroy();
   });
   const origEmit = server.emit;
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
