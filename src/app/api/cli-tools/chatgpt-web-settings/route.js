@@ -16,8 +16,18 @@ const PROBE_TIMEOUT_MS = 4000;
 // The caller supplies this value, so it is constrained to a loopback origin:
 // otherwise this route is a server-side request forgery primitive that reports
 // status codes, timing and response fragments back to the caller.
+/**
+ * Where to probe.
+ *
+ * An explicit value from the card wins; otherwise fall back to the SAME place
+ * routed traffic goes. assertBridgeBaseUrl alone resolves an empty value to
+ * the 127.0.0.1 default, so with the bridge deployed as a sibling container
+ * this route probed the router's own loopback, found nothing, and reported
+ * "Bridge offline" while routing worked perfectly.
+ */
 function normalizeBaseUrl(value) {
-  return assertBridgeBaseUrl(value);
+  if (typeof value === "string" && value.trim()) return assertBridgeBaseUrl(value);
+  return resolveChatGptWebBaseUrl(null);
 }
 
 async function probe(url) {
