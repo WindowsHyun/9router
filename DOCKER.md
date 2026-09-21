@@ -39,6 +39,27 @@ App listens on port `20128`. Open: http://localhost:20128
 
 ---
 
+## Reaching the provider cards remotely
+
+The Claude Code and ChatGPT Web cards drive routes that are normally
+restricted to loopback, because on a desktop they can spawn a process or open
+a window. In a container that restriction only gets in the way — there is no
+desktop behind them — so it is lifted automatically when 9Router detects
+`/.dockerenv` or `KUBERNETES_SERVICE_HOST`. Dashboard authentication still
+applies.
+
+If you run 9Router outside a container but reach the dashboard from another
+machine, set it explicitly:
+
+```yaml
+    environment:
+      NINEROUTER_HOST_ROUTES_REMOTE: "1"
+```
+
+`0` forces the loopback rule back on.
+
+---
+
 ## The two local providers
 
 ### Claude Code CLI — bundled in the image

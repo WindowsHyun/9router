@@ -56,6 +56,39 @@ docker compose up -d
 docker compose logs -f chatgpt-web
 ```
 
+### Already hit and fixed: both provider cards showed only "Local only"
+
+In Kubernetes the Claude Code and ChatGPT Web cards both rendered
+`Local only: CLI token required`, the Login button did nothing, and the bridge
+read as offline. Three separate causes, all now fixed:
+
+1. **The routes were unreachable.** `/api/cli-tools/claude-cli-settings`,
+   `claude-cli-accounts` and `chatgpt-web-settings` are in `LOCAL_ONLY_PATHS`,
+   which requires the request to come from loopback. Behind an Ingress it
+   never does, so every call was a 403 — the cards could not even read status.
+
+   That gate exists to stop a remote caller making the *operator's desktop*
+   spawn processes. In a container there is no desktop behind the routes and
+   the dashboard is necessarily remote, so the rule rejected all legitimate
+   use and protected nothing that `/api/*` authentication does not already
+   cover. It is now container-aware: authentication alone is the gate when
+   containerised, and the desktop rule is unchanged everywhere else.
+
+   Detection is `/.dockerenv`, `KUBERNETES_SERVICE_HOST`, or an explicit
+   `NINEROUTER_HOST_ROUTES_REMOTE` (`1` forces on, `0` forces off). Set it to
+   `1` if you run outside a container but still reach the dashboard remotely
+   — bare-metal behind nginx, say.
+
+2. **The bridge card probed the wrong address.** It fell back to the
+   `127.0.0.1:17841` default and ignored `CHATGPT_WEB_BASE_URL`, so with the
+   bridge as a sibling container it probed the router's own loopback, found
+   nothing, and said "Bridge offline" while routing worked. It now defaults to
+   the same value routed traffic uses.
+
+3. **Both cards called a failed request "not installed" / "offline".** A 403
+   and a genuinely missing binary looked identical, which sent debugging in
+   the wrong direction. The HTTP failure is now reported as itself.
+
 ### Already hit and fixed: Electron's postinstall
 
 The first real build failed here, so it is written down rather than left to be

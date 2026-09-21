@@ -138,6 +138,16 @@ export const PATCHED_FILES = [
     hint: "A noAuth provider must use its real connection rows when it has any. Upstream returns a single synthetic Public connection and never looks, which is why multi-account and per-account fallback did not work for claude-cli or chatgpt-web.",
   },
   {
+    path: "src/dashboardGuard.js",
+    markers: ["IS_CONTAINER", "NINEROUTER_HOST_ROUTES_REMOTE"],
+    hint: "LOCAL_ONLY_PATHS requires a loopback request, which no container deployment can satisfy - both provider cards showed only \"Local only: CLI token required\". The gate is container-aware: authentication alone when containerised, the desktop rule everywhere else. Do not drop this or the Docker/K8s deployment loses those routes entirely.",
+  },
+  {
+    path: "src/app/api/cli-tools/chatgpt-web-settings/route.js",
+    markers: ["resolveChatGptWebBaseUrl"],
+    hint: "The status probe must default to the same address routed traffic uses. assertBridgeBaseUrl alone resolves an empty value to 127.0.0.1, so with the bridge as a sibling container this reported \"Bridge offline\" while routing worked.",
+  },
+  {
     path: "src/shared/constants/providers.js",
     markers: ["localSetup", "supportsAccounts"],
     hint: "The registry-to-UI field mapping is an explicit allowlist, so a new provider field is dropped unless it is listed here too.",

@@ -33,7 +33,14 @@ export default function ChatGptWebBridgeCard() {
     const query = url ? `?baseUrl=${encodeURIComponent(url)}` : "";
     try {
       const res = await fetch(`${STATUS_ENDPOINT}${query}`, { cache: "no-store" });
-      applyStatus(await res.json());
+      const data = await res.json().catch(() => ({}));
+      // A refused request says nothing about the bridge; reporting it as
+      // "offline" sent people looking for a bridge problem that was not there.
+      if (!res.ok) {
+        setStatus({ running: false, error: data.error || `Status unavailable (HTTP ${res.status})` });
+      } else {
+        applyStatus(data);
+      }
     } catch (e) {
       setStatus({ running: false, error: e.message });
     } finally {
@@ -108,7 +115,7 @@ export default function ChatGptWebBridgeCard() {
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="http://127.0.0.1:17841"
-            hint="Loopback only — forward a remote bridge to 127.0.0.1. This field only changes what Recheck/Login probe; routed traffic uses CHATGPT_WEB_BASE_URL, or the default when that is unset."
+            hint="Loopback, a container name (http://chatgpt-web:17841) or a private address. Public hosts are refused so the session cannot leave your network. Defaults to CHATGPT_WEB_BASE_URL; this field only changes what Recheck/Login probe."
           />
         </div>
         <div className="flex gap-2">

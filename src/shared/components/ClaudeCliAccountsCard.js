@@ -24,22 +24,27 @@ export default function ClaudeCliAccountsCard() {
   const [pendingId, setPendingId] = useState(null);
   const [token, setToken] = useState("");
 
+  // A failed request is not the same as "Claude Code is missing". Reporting
+  // the HTTP failure separately is what distinguishes "the route refused us"
+  // from "the binary is not there", which previously looked identical.
+  const read = async () => {
+    try {
+      const res = await fetch(ENDPOINT, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { loadError: data.error || `Could not read accounts (HTTP ${res.status})` };
+      return data;
+    } catch (e) {
+      return { loadError: e.message || "Could not reach 9Router" };
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
-    fetch(ENDPOINT, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => { if (!cancelled) setState(d); })
-      .catch((e) => { if (!cancelled) setState({ error: e.message }); });
+    read().then((d) => { if (!cancelled) setState(d); });
     return () => { cancelled = true; };
   }, []);
 
-  const reload = async () => {
-    try {
-      setState(await (await fetch(ENDPOINT, { cache: "no-store" })).json());
-    } catch (e) {
-      setState({ error: e.message });
-    }
-  };
+  const reload = async () => setState(await read());
 
   const post = async (body) => {
     setBusy(true);
@@ -105,10 +110,10 @@ export default function ClaudeCliAccountsCard() {
         <div>
           <h2 className="text-lg font-semibold">Claude Code accounts</h2>
           <p className="text-xs text-text-muted mt-1 max-w-2xl leading-relaxed">
-            This provider runs the <code>claude</code> binary already installed on this machine —
-            no API key, no OAuth token replay. Each account is a separate Claude Code
-            config directory, so several subscriptions can be used side by side and
-            9Router will fall back between them.
+            This provider runs the <code>claude</code> binary on the machine hosting 9Router —
+            no API key, no OAuth token replay. Each account is its own Claude Code identity
+            (a config directory on a desktop, a setup token in a container), so several
+            subscriptions work side by side and 9Router falls back between them.
           </p>
         </div>
         <Badge variant={state?.connectedCount > 0 ? "success" : "default"} dot>
@@ -116,11 +121,18 @@ export default function ClaudeCliAccountsCard() {
         </Badge>
       </div>
 
-      {state && !installed && (
+      {state?.loadError && (
+        <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+          {state.loadError}
+        </div>
+      )}
+
+      {state && !state.loadError && !installed && (
         <div className="mb-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-400">
           Claude Code was not found on this machine. Install it from{" "}
           <a className="underline" href="https://claude.com/claude-code" target="_blank" rel="noreferrer">claude.com/claude-code</a>,
-          or set <code>CLI_CLAUDE_BIN</code> to its path, then reload.
+          or set <code>CLI_CLAUDE_BIN</code> to its path, then reload. A token
+          account works regardless — it does not need a local binary.
         </div>
       )}
 
