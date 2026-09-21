@@ -93,6 +93,28 @@ RUN git clone --depth 1 --branch "${BRIDGE_VERSION}" \
     && bun install --frozen-lockfile --cwd launcher --ignore-scripts \
     && bun run --cwd launcher build
 
+# The browser helper, which `launcher build` does NOT produce — that script is
+# only `typecheck && vite build`, i.e. the renderer. The helper is built by its
+# own script, which upstream runs from `launcher dev` (scripts/dev.cjs) and
+# bundles into resources when packaging.
+#
+# We run unpackaged, and unpackaged is the branch that looks for it on disk:
+#
+#   const BROWSER_HELPER_PATH = app.isPackaged
+#     ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
+#     : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
+#
+# Without it the launcher spawns a file that does not exist, and setup step 2
+# fails with "Browser helper verification exited with status 1" — which is
+# exactly what happened, because the earlier version of this image built only
+# the renderer.
+#
+# `test -f` rather than trusting the exit code: this must not be able to go
+# missing quietly a second time.
+RUN bun run scripts/build-browser-helper.ts \
+    && test -f .launcher-runtime/browser-helper.cjs \
+    && echo "browser helper: $(wc -c < .launcher-runtime/browser-helper.cjs) bytes"
+
 # Fetch the Electron the launcher's lockfile actually resolved to, rather than
 # a version pinned twice in two places that can drift apart.
 RUN set -eu; \
