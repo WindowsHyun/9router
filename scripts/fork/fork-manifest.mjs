@@ -80,6 +80,8 @@ export const ADDED_FILES = [
   "scripts/fork/check-bridge-console.mjs",
   // reproduces the Local-only failure both cards showed, and the fix
   "scripts/fork/check-container-guard.mjs",
+  // drives the Claude Code accounts route on a real server
+  "scripts/fork/check-claude-accounts.mjs",
 ];
 
 /** Artwork the fork reuses from upstream files; regenerated rather than carried. */
