@@ -17,6 +17,11 @@ cp .env.example .env     # set JWT_SECRET; see the notes in that file
 docker compose up -d
 ```
 
+> First run builds two images and takes several minutes: the router (so Claude
+> Code is inside it — the published image is upstream's and has no Claude Code)
+> and the bridge (Chromium, Electron and a virtual display). Give Docker at
+> least 4 GB of memory for the router's Next.js build.
+
 Open http://localhost:20128.
 
 Router only, no local providers:

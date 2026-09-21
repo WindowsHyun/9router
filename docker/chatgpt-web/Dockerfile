@@ -35,7 +35,7 @@ RUN if [ "$APT_MIRROR_HOST" != "deb.debian.org" ]; then \
 # sign-in. fonts-liberation and the CJK fonts keep chatgpt.com legible.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget unzip git \
-      xvfb x11vnc novnc websockify \
+      xvfb x11vnc novnc websockify x11-utils \
       libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
       libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
       libpango-1.0-0 libcairo2 libgtk-3-0 libx11-xcb1 libxss1 \
@@ -50,10 +50,17 @@ RUN curl -fsSL https://bun.sh/install | bash
 WORKDIR /opt/codex-chatgpt-web
 # A pinned tag, not HEAD: an unpinned bridge would change how routed requests
 # behave on every image rebuild.
+# The renderer is built here, at image build time. The alternative,
+# scripts/start-launcher.ts, runs the launcher in Vite dev mode and re-runs
+# `bun install` on every container start — which needs network at boot and
+# fails without it. Verified locally: with launcher deps installed, the build
+# completes and writes launcher/dist/index.html, and `start` is `electron .`
+# against electron/main.cjs.
 RUN git clone --depth 1 --branch "${BRIDGE_VERSION}" \
       https://github.com/miuuyy/codex-chatgpt-web . \
     && bun install --frozen-lockfile \
-    && bun install --frozen-lockfile --cwd launcher
+    && bun install --frozen-lockfile --cwd launcher \
+    && bun run --cwd launcher build
 
 # NOT /tmp: the bridge refuses to set up when its own runtime path looks
 # ephemeral ("Runtime command must not reference an ephemeral path").
@@ -74,6 +81,6 @@ EXPOSE 17841 6080
 # Long start period: the first boot waits for a human to finish sign-in in the
 # launcher, and that wait must not be read as a broken deployment.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=5 \
-  CMD curl -fsS "http://127.0.0.1:${BRIDGE_PORT}/v1/models" || exit 1
+  CMD curl -fsS "http://127.0.0.1:${BRIDGE_PORT}/healthz" || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]

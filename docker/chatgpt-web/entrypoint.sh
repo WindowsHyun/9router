@@ -56,5 +56,8 @@ fi
 export ELECTRON_DISABLE_SANDBOX=1
 export CODEX_CHATGPT_WEB_HOME="$PROFILE"
 
-cd /opt/codex-chatgpt-web
-exec bun run scripts/start-launcher.ts
+# `launcher start` is `electron .` against the renderer built into the image.
+# Deliberately not scripts/start-launcher.ts: that is the from-source dev path
+# and re-installs dependencies on every start.
+cd /opt/codex-chatgpt-web/launcher
+exec bun run start
