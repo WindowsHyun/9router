@@ -1,0 +1,163 @@
+/**
+ * Single source of truth for what this fork adds on top of upstream
+ * (decolua/9router). Every fork script reads this; keep it in step with the
+ * code and the upgrade tooling stays honest.
+ *
+ * See UPGRADE.md for how it is used.
+ */
+
+/** Upstream this fork tracks. */
+export const UPSTREAM = {
+  remote: "upstream",
+  url: "https://github.com/decolua/9router",
+  branch: "master",
+};
+
+/** Branch that carries the fork's commits. */
+export const FORK_BRANCH = "master";
+
+/**
+ * Files this fork adds. Upstream never touches them, so they cannot conflict —
+ * they only need to still be present after an upgrade.
+ */
+export const ADDED_FILES = [
+  // claude-cli provider
+  "open-sse/config/claudeCli.js",
+  "open-sse/executors/claude-cli.js",
+  "open-sse/providers/registry/claude-cli.js",
+  "src/app/api/cli-tools/claude-cli-settings/route.js",
+  "src/shared/components/ClaudeCliStatusCard.js",
+  // chatgpt-web provider
+  "open-sse/config/chatgptWeb.js",
+  "open-sse/executors/chatgpt-web.js",
+  "open-sse/providers/registry/chatgpt-web.js",
+  "src/app/api/cli-tools/chatgpt-web-settings/route.js",
+  "src/shared/components/ChatGptWebBridgeCard.js",
+  // cron auto-ping
+  "src/shared/services/cronMatcher.js",
+  "src/shared/components/AutoPingScheduleModal.js",
+  // shared
+  "open-sse/utils/concurrencyGate.js",
+  // tests — their absence means the fork is present but unproven
+  "tests/unit/claude-cli-executor.test.js",
+  "tests/unit/chatgpt-web-executor.test.js",
+  "tests/unit/concurrency-gate.test.js",
+  "tests/unit/quota-autoping-cron.test.js",
+  "tests/unit/forced-sse-client-format.test.js",
+  "tests/real/claude-cli.real.test.js",
+  // docs + tooling
+  "FORK-CHANGELOG.md",
+  "UPGRADE.md",
+  "scripts/fork/fork-manifest.mjs",
+  "scripts/fork/verify-fork.mjs",
+  "scripts/fork/upgrade-fork.mjs",
+  "scripts/fork/export-patch.mjs",
+];
+
+/** Artwork the fork reuses from upstream files; regenerated rather than carried. */
+export const DERIVED_ASSETS = [
+  { from: "public/providers/claude.png", to: "public/providers/claude-cli.png" },
+  { from: "public/providers/codex.png", to: "public/providers/chatgpt-web.png" },
+];
+
+/**
+ * Upstream files the fork edits. `markers` are strings that must be present for
+ * the integration to be live — they are what verify-fork checks, and what a
+ * conflict resolution has to preserve. `hint` is shown when a marker is missing
+ * and when resolving a merge conflict in that file.
+ */
+export const PATCHED_FILES = [
+  {
+    path: "open-sse/executors/index.js",
+    markers: ["ClaudeCliExecutor", "ChatGptWebExecutor", '"claude-cli":', '"chatgpt-web":'],
+    hint: "Keep both fork imports and all four executor-map entries (claude-cli, chatgpt-web, and the ccli/cgw aliases) alongside whatever upstream added.",
+  },
+  {
+    path: "open-sse/providers/registry/index.js",
+    markers: ["./claude-cli.js", "./chatgpt-web.js"],
+    hint: "Despite the 'Auto-generated' header there is no generator script — this file is hand-maintained. On conflict take upstream's list, then re-add the two fork imports and their entries in the default-export array (use free pN indices).",
+  },
+  {
+    path: "open-sse/handlers/chatCore/sseToJsonHandler.js",
+    markers: ["translateNonStreamingResponse"],
+    hint: "Fork replaces the final `const finalBody = ...` ternary with an if/else that also converts for non-OpenAI clients. Keep the fork branch; upstream's version is the block it replaced. This fix is a candidate to send upstream.",
+  },
+  {
+    path: "src/shared/services/quotaAutoPing.js",
+    markers: ["cronMatcher", "runCronPing", "readCronEntry", "sendClaudeCliPing", "providerHandlers"],
+    hint: "Largest fork edit. Cron support is additive: the import, sendPingViaCli on the claude handler, sendClaudeCliPing, the cron block, the tick's cron branch, and the deps.providerHandlers injection. Keep all of them plus upstream's changes to the reset-based path.",
+  },
+  {
+    path: "src/shared/constants/config.js",
+    markers: ["cronPingText", "cronMaxExpressions", "cliPingModel", "cliPingTimeoutMs"],
+    hint: "Additive keys inside QUOTA_AUTOPING_CONFIG. Keep them and any new upstream keys.",
+  },
+  {
+    path: "src/shared/services/initializeApp.js",
+    markers: ["config?.cron"],
+    hint: "hasQuotaAutoPingEnabled must also return true for cron-only setups, or a cron schedule does not survive a restart.",
+  },
+  {
+    path: "src/dashboardGuard.js",
+    markers: ["/api/cli-tools/claude-cli-settings", "/api/cli-tools/chatgpt-web-settings"],
+    hint: "Both entries belong in LOCAL_ONLY_PATHS — one spawns a process, the other fetches a URL and can open a window on the host. Dropping them exposes those routes when requireLogin is false.",
+  },
+  {
+    path: "src/app/api/cli-tools/all-statuses/route.js",
+    markers: ["claudeCliGet", "chatgptWebGet"],
+    hint: "Two imports and two STATUS_GETTERS entries.",
+  },
+  {
+    path: "src/shared/constants/cliTools.js",
+    markers: ['"claude-cli":', '"chatgpt-web":'],
+    hint: "Two CLI_TOOLS entries inserted before the `devin:` entry.",
+  },
+  {
+    path: "src/shared/components/index.js",
+    markers: ["AutoPingScheduleModal", "ChatGptWebBridgeCard", "ClaudeCliStatusCard"],
+    hint: "Three re-exports.",
+  },
+  {
+    path: "src/app/(dashboard)/dashboard/providers/[id]/ConnectionRow.js",
+    markers: ["autoPingSchedule", "scheduleTooltip"],
+    hint: "Adds the autoPingSchedule prop, its Schedule button next to Auto-ping, the tooltip, and the propTypes entry.",
+  },
+  {
+    path: "src/app/(dashboard)/dashboard/providers/[id]/page.js",
+    markers: [
+      "AutoPingScheduleModal",
+      "ChatGptWebBridgeCard",
+      "ClaudeCliStatusCard",
+      "cronScheduleTarget",
+      "handleAutoPingSchedule",
+    ],
+    hint: "Imports, the cronScheduleTarget state, cron in the autoPing state + settings load, handleAutoPingSchedule, the autoPingSchedule prop on ConnectionRow, the modal near the other modals, and the two status cards in the isFreeNoAuth branch.",
+  },
+];
+
+/**
+ * Regenerated after every upgrade rather than merged: upstream adds providers of
+ * its own, so these snapshots conflict on release and are cheap to rebuild.
+ */
+export const REGENERATED_BASELINES = [
+  { file: "tests/__baseline__/providers-baseline.json", command: ["node", ["tests/__baseline__/snapshot-providers.mjs"]] },
+  { file: "tests/__baseline__/alias-baseline.json", command: ["node", ["tests/__baseline__/verify-alias.mjs", "--snapshot"]] },
+];
+
+/** Provider ids the fork registers; asserted against the built registry. */
+export const FORK_PROVIDERS = [
+  { id: "claude-cli", alias: "ccli", format: "openai", forceStream: true },
+  { id: "chatgpt-web", alias: "cgw", format: "openai-responses", forceStream: true },
+];
+
+/** Fork test files, run from `tests/`. */
+export const FORK_TESTS = [
+  "unit/claude-cli-executor.test.js",
+  "unit/chatgpt-web-executor.test.js",
+  "unit/concurrency-gate.test.js",
+  "unit/quota-autoping-cron.test.js",
+  "unit/forced-sse-client-format.test.js",
+];
+
+/** Live tests; skipped unless REAL_CLI_TESTS=1 and Claude Code is installed. */
+export const FORK_LIVE_TESTS = ["real/claude-cli.real.test.js"];
