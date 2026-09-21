@@ -22,9 +22,11 @@ Several tokens means several accounts, and 9Router falls back between them.
 On a desktop the interactive login still works and each account keeps its own
 Claude Code config directory.
 
-**ChatGPT Web** — a sidecar container runs the bridge **headless**: the worker
-launches Chromium itself with `headed: false`, so there is no desktop, no X
-server and no VNC in steady state. Press **Login** in the dashboard once and a
+**ChatGPT Web** — a sidecar container runs the bridge with **no Electron and
+no resident VNC**: the worker launches Chromium itself on a bare Xvfb, with no
+launcher GUI, window manager or compositor. (`BRIDGE_HEADLESS=1` removes the
+X server too, but is not the default — upstream never runs headless, so bot
+detection and the DOM automation are untested there.) Press **Login** in the dashboard once and a
 temporary sign-in console starts on demand (`login-agent.mjs`), served through
 the router's own origin behind your dashboard session
 (`bridge-vnc-proxy.cjs`); sign in, close the browser window, and the console

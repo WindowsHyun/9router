@@ -42,9 +42,10 @@ services:
     ports:
       - "8787:8787"
 
-  # ChatGPT Web bridge, headless. The bridge drives a real chatgpt.com session
-  # in a browser, but it runs that browser headless — there is no desktop, no X
-  # server and no VNC in steady state.
+  # ChatGPT Web bridge. It drives a real chatgpt.com session in a browser, on a
+  # bare virtual display — no Electron launcher, no desktop, no VNC in steady
+  # state. (BRIDGE_HEADLESS=1 drops the display too; not the default, because
+  # upstream never runs headless.)
   #
   # Signing in is the one thing that needs a visible browser, so the container
   # can start a temporary X server and console on demand: press Login in the

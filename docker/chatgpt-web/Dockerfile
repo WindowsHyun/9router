@@ -1,27 +1,32 @@
-# ChatGPT Web bridge — headless.
+# ChatGPT Web bridge — no Electron, no launcher, no resident VNC.
 #
 # The bridge drives a real chatgpt.com session in a browser (its browser-worker
 # is ~4,500 lines of Playwright page automation, not an HTTP client), so a
-# browser is not optional. A *desktop* is.
+# browser is not optional. An Electron launcher, a desktop GUI and a permanent
+# VNC stack were.
 #
 # This image runs the bridge's `managed-chrome` host, where the worker launches
-# Chromium itself and `headless: !config.headed` means no display at all in
-# steady state:
+# Chromium itself:
 #
 #   src/adapters/chatgpt-web/browser-worker.ts
 #     this.browser = await chromium.launch({
 #       executablePath: this.config.chromeExecutablePath,
 #       headless: !this.config.headed, ...
 #
-# The earlier version of this image ran the Electron launcher on a permanent
-# Xvfb with x11vnc and noVNC beside it — a second full Chromium, a GUI, an X
-# server and a VNC stack, all resident forever, purely so a human could sign in
-# once. That is what made the pod heavy.
+# It runs headful on a bare Xvfb. Headless would save a little more, but
+# `headed: true` is hardcoded in the bridge's own defaultConfig() with no flag
+# to change it and no mention anywhere upstream — so headless is a path they
+# have never run, and both chatgpt.com's bot detection and the DOM automation
+# itself are untested on it. BRIDGE_HEADLESS=1 takes that risk; the default
+# does not. An X server with no window manager and no compositor is tens of
+# megabytes.
 #
-# Signing in still needs a visible browser, so the X and VNC tools are still
-# installed — but nothing starts them until someone opens the console, and
-# login-agent.mjs tears them down again afterwards. Steady state is bun plus a
-# headless Chromium.
+# The earlier version of this image ran the Electron launcher — a second full
+# Chromium plus a GUI — on that same Xvfb, with x11vnc and noVNC resident
+# beside it, purely so a human could sign in once. That is what made the pod
+# heavy. Signing in still needs a visible browser, so the VNC tools remain
+# installed, but login-agent.mjs starts them only when the console is opened
+# and stops them afterwards.
 #
 # Why not upstream's terminal setup: `prepareSetup()` throws off macOS for this
 # host ("Terminal-only managed Chrome setup currently requires macOS"). That
@@ -92,6 +97,12 @@ ENV BRIDGE_PORT=17841
 ENV VNC_PORT=6080
 # Console teardown after this many seconds with nobody connected.
 ENV LOGIN_IDLE_TIMEOUT_SEC=900
+# Headful on a bare Xvfb by default. Headless is a mode the bridge upstream
+# never runs, never exposes and never documents, so both chatgpt.com's bot
+# detection and the bridge's own DOM automation are untested there. Set
+# BRIDGE_HEADLESS=1 to drop the X server entirely and take that risk; the
+# sign-in console works either way.
+ENV BRIDGE_HEADLESS=
 
 RUN mkdir -p /data/profile
 

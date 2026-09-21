@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Headless bridge: a config, an on-demand sign-in console, and `serve`.
 #
-# What is deliberately NOT here any more: Xvfb, x11vnc, websockify and an
-# Electron launcher, all started unconditionally and resident for the life of
-# the pod. The bridge runs headless (`headed: false`), and the X and VNC
-# processes are started by login-agent.mjs only while someone is signing in,
-# then stopped again.
+# What is deliberately NOT here any more: an Electron launcher and its GUI, and
+# x11vnc + websockify resident for the life of the pod. The VNC pair is started
+# by login-agent.mjs only while someone is signing in, then stopped again.
+#
+# A bare Xvfb does stay, because the bridge runs headful by default — headless
+# is a mode upstream never runs (see bootstrap-config.ts). An X server with no
+# window manager and no compositor is tens of megabytes; the launcher and the
+# permanent VNC stack it replaced were the actual weight.
 #
 # Steady-state process tree:
-#   tini → bun (cli.ts serve) → chromium (headless, per session)
+#   tini → Xvfb (headed mode; omitted with BRIDGE_HEADLESS=1)
+#        → bun (cli.ts serve) → chromium (per session)
 #        → bun (login-agent, idle)
 set -euo pipefail
 
@@ -30,6 +34,32 @@ export BRIDGE_ROOT
 log "preparing configuration"
 bun /opt/bootstrap-config.ts
 
+# Headed by default, on a bare Xvfb — see bootstrap-config.ts for why: headless
+# is a mode upstream never runs, never exposes and never documents, and both
+# chatgpt.com's bot detection and the bridge's own DOM automation are untested
+# on it. An X server with no window manager, no compositor and no VNC costs
+# tens of megabytes; the Electron launcher and permanent VNC stack this
+# replaced cost orders of magnitude more, and that was the actual problem.
+#
+# BRIDGE_HEADLESS=1 skips even this. The sign-in console reuses whichever
+# display exists.
+case "${BRIDGE_HEADLESS:-}" in
+  1|true|True|TRUE|yes|Yes|YES)
+    log "headless: no display (untested upstream — see bootstrap-config.ts)"
+    ;;
+  *)
+    export DISPLAY="${LOGIN_DISPLAY:-:99}"
+    log "starting the display on $DISPLAY for the bridge's browser"
+    Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp &
+    XVFB_PID=$!
+    for _ in $(seq 1 60); do
+      xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break
+      sleep 0.25
+    done
+    xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 || { log "Xvfb never came up"; exit 1; }
+    ;;
+esac
+
 # The sign-in console. Binds immediately, starts nothing until it is opened.
 log "starting the sign-in console agent on :${VNC_PORT:-6080}"
 bun /opt/login-agent.mjs &
@@ -49,6 +79,7 @@ fi
 cleanup() {
   log "stopping"
   kill "$AGENT_PID" 2>/dev/null || true
+  [ -n "${XVFB_PID:-}" ] && kill "$XVFB_PID" 2>/dev/null || true
   [ -n "$FORWARD_PID" ] && kill "$FORWARD_PID" 2>/dev/null || true
 }
 trap cleanup TERM INT

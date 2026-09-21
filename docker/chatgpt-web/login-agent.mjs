@@ -80,8 +80,17 @@ async function startStack() {
   stack.loginExit = null;
   log("starting the sign-in console");
 
-  spawnTracked("Xvfb", "Xvfb", [DISPLAY, "-screen", "0", "1280x800x24", "-nolisten", "tcp"]);
-  await waitFor(displayReady, 20000, "Xvfb");
+  // In headed mode the entrypoint already owns a display for the bridge's own
+  // Chrome, and the sign-in browser shares it. Starting a second X server on
+  // the same DISPLAY would fail, and killing that one on teardown would take
+  // the bridge's browser with it — so only start one if nothing is there.
+  // Anything not spawned here is not in stack.procs, and so is never stopped.
+  if (await displayReady()) {
+    log(`reusing the existing display ${DISPLAY}`);
+  } else {
+    spawnTracked("Xvfb", "Xvfb", [DISPLAY, "-screen", "0", "1280x800x24", "-nolisten", "tcp"]);
+    await waitFor(displayReady, 20000, "Xvfb");
+  }
 
   // -localhost: the RFB port is never exposed; websockify in front of it is
   // what this agent proxies, and 9Router gates that behind its own session.

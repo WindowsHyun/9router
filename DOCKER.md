@@ -86,8 +86,11 @@ accounts → paste the token**. Add several tokens for several accounts;
 
 ### ChatGPT Web — a sidecar container
 
-The bridge drives a real chatgpt.com session in a browser, but it runs that
-browser **headless** — no desktop, no X server, no VNC while it is working.
+The bridge drives a real chatgpt.com session in a browser. That browser runs
+on a bare virtual display — **no Electron launcher, no desktop, and no VNC**
+while it is working. (Fully headless is available as `BRIDGE_HEADLESS=1`, but
+it is not the default: upstream never runs that mode, so chatgpt.com's bot
+detection and the bridge's own automation are both untested on it.)
 
 ```bash
 docker compose up -d        # builds the bridge image on first run (a few minutes)

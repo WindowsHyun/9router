@@ -30,7 +30,7 @@ with it:
 
 ---
 
-## The bridge is headless
+## The bridge no longer runs Electron
 
 This matters most if you read an older version of this file, or the git
 history: the bridge **used to** run Electron's launcher on a permanent Xvfb
@@ -48,13 +48,24 @@ this.browser = await chromium.launch({
   headless: !this.config.headed, ...
 ```
 
-with `headed: false`. Steady state is **bun + a headless Chromium**, and no X
-server at all.
+Steady state is **bun + one Chromium on a bare Xvfb** — no Electron, no
+launcher GUI, no window manager, no compositor, and no VNC.
 
-Signing in still needs a browser someone can see, so `login-agent.mjs` starts
-Xvfb, x11vnc and websockify **on demand** when the console is opened, and stops
-them when the login finishes or the console goes idle
-(`LOGIN_IDLE_TIMEOUT_SEC`, default 900).
+**Why not headless, since the code clearly supports it.** `headed: true` is
+hardcoded in the bridge's own `defaultConfig()`, there is no setup flag to
+change it, and headless appears nowhere in their docs — so it is a path
+upstream has never run. Two things are untested on it and neither is cheap to
+discover in production: chatgpt.com's anti-automation treating a headless
+browser as a bot, and the DOM automation depending on real layout. The weight
+was never the browser being visible; it was an Electron launcher and a
+permanent VNC stack. `BRIDGE_HEADLESS=1` drops the X server for anyone who
+wants the last few tens of megabytes and will take that risk.
+
+Signing in needs a browser someone can *watch*, which is different again, so
+`login-agent.mjs` starts x11vnc and websockify **on demand** when the console
+is opened and stops them when the login finishes or the console goes idle
+(`LOGIN_IDLE_TIMEOUT_SEC`, default 900). It reuses the existing display rather
+than starting a second X server, so the bridge's own browser is unaffected.
 
 Two consequences worth knowing:
 
