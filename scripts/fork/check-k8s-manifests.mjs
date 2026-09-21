@@ -1,0 +1,149 @@
+/**
+ * Validate a 9Router Kubernetes bundle.
+ *
+ *   node scripts/fork/check-k8s-manifests.mjs <dir-with-kustomization.yaml>
+ *
+ * Two jobs. The ordinary one: everything parses, and the references between
+ * documents resolve — every claimName has a PVC, every mount has a volume,
+ * every PVC binds a PV with a matching storage class.
+ *
+ * The useful one: the traps this particular deployment has to avoid, which are
+ * documented in AGENT-HANDOFF.md and are easy to undo by accident —
+ *
+ *   - a probe on the bridge sidecar, which makes the whole pod NotReady until
+ *     somebody signs in, taking the router offline with it;
+ *   - RollingUpdate or replicas > 1, which briefly gives two pods one browser
+ *     profile and logs them both out;
+ *   - the bridge profile on the router's PVC, which the router chowns
+ *     recursively at every start;
+ *   - a memory-backed /dev/shm large enough to eat the container's own memory
+ *     limit from the inside;
+ *   - a Service that exposes the sign-in console, which has no authentication
+ *     of its own.
+ *
+ * Not an admission check: it does not need or replace kubectl.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+
+const require_ = createRequire(import.meta.url);
+const yaml = require_("js-yaml");
+
+const DIR = process.argv[2];
+if (!DIR) {
+  console.error();
+  process.exit(2);
+}
+
+const results = [];
+const check = (name, ok, detail = "") => {
+  results.push({ name, ok, detail });
+  console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${ok || !detail ? "" : `\n        ${detail}`}`);
+};
+
+const kustomization = yaml.load(fs.readFileSync(path.join(DIR, "kustomization.yaml"), "utf8"));
+const docs = [];
+for (const file of kustomization.resources) {
+  const full = path.join(DIR, file);
+  if (!fs.existsSync(full)) {
+    check(`${file} exists`, false, "listed in kustomization.yaml but not on disk");
+    continue;
+  }
+  try {
+    for (const d of yaml.loadAll(fs.readFileSync(full, "utf8"))) {
+      if (d) docs.push({ file, doc: d });
+    }
+    check(`${file} parses`, true);
+  } catch (e) {
+    check(`${file} parses`, false, e.message);
+  }
+}
+
+const byKind = (kind) => docs.filter((d) => d.doc.kind === kind).map((d) => d.doc);
+const deployment = byKind("Deployment").find((d) => d.metadata.name === "nine-router");
+check("the router Deployment is present", Boolean(deployment));
+
+const containers = deployment?.spec?.template?.spec?.containers || [];
+const router = containers.find((c) => c.name === "nine-router");
+const bridge = containers.find((c) => c.name === "chatgpt-web");
+check("the chatgpt-web sidecar is back", Boolean(bridge));
+
+// Every claimName the pod asks for must be declared by a PVC in this bundle.
+const claims = new Set(byKind("PersistentVolumeClaim").map((p) => p.metadata.name));
+for (const v of deployment?.spec?.template?.spec?.volumes || []) {
+  if (!v.persistentVolumeClaim) continue;
+  check(`volume "${v.name}" → PVC ${v.persistentVolumeClaim.claimName} exists`,
+    claims.has(v.persistentVolumeClaim.claimName),
+    `no PersistentVolumeClaim named ${v.persistentVolumeClaim.claimName} in the kustomization`);
+}
+
+// Every mount must name a volume the pod declares.
+const volumeNames = new Set((deployment?.spec?.template?.spec?.volumes || []).map((v) => v.name));
+for (const c of containers) {
+  for (const m of c.volumeMounts || []) {
+    check(`${c.name} mounts "${m.name}"`, volumeNames.has(m.name),
+      `container ${c.name} mounts ${m.name}, which the pod does not declare`);
+  }
+}
+
+// Each PVC must bind to a PV in the bundle, with a matching storageClass.
+const pvs = byKind("PersistentVolume");
+for (const pvc of byKind("PersistentVolumeClaim")) {
+  if (!pvc.spec.volumeName) continue;
+  const pv = pvs.find((p) => p.metadata.name === pvc.spec.volumeName);
+  check(`PVC ${pvc.metadata.name} → PV ${pvc.spec.volumeName}`, Boolean(pv), "no such PersistentVolume");
+  if (pv) {
+    check(`  storageClass matches for ${pvc.metadata.name}`,
+      pv.spec.storageClassName === pvc.spec.storageClassName,
+      `PV=${pv.spec.storageClassName} PVC=${pvc.spec.storageClassName}`);
+  }
+}
+
+// Two PVs must not point at the same NFS path, or they share one directory.
+const nfsPaths = pvs.filter((p) => p.spec.nfs).map((p) => `${p.spec.nfs.server}:${p.spec.nfs.path}`);
+check("no two PersistentVolumes share an NFS path",
+  new Set(nfsPaths).size === nfsPaths.length, nfsPaths.join(", "));
+
+// The traps this deployment specifically has to avoid.
+check("the bridge has no readiness/liveness probe",
+  bridge && !bridge.readinessProbe && !bridge.livenessProbe,
+  "a probe on the sidecar makes the whole pod NotReady until someone signs in, taking the router offline");
+
+check("strategy is Recreate, not RollingUpdate",
+  deployment?.spec?.strategy?.type === "Recreate",
+  "two pods would briefly share one browser profile and log each other out");
+
+check("replicas is 1", deployment?.spec?.replicas === 1, `replicas=${deployment?.spec?.replicas}`);
+
+check("the bridge profile is NOT on the router's PVC",
+  (() => {
+    const vols = deployment?.spec?.template?.spec?.volumes || [];
+    const routerClaim = vols.find((v) => v.name === "nine-router-data")?.persistentVolumeClaim?.claimName;
+    const bridgeClaim = vols.find((v) => v.name === "chatgpt-web-profile")?.persistentVolumeClaim?.claimName;
+    return Boolean(routerClaim && bridgeClaim && routerClaim !== bridgeClaim);
+  })(),
+  "the router chowns its data dir recursively at every start; that must not walk a browser profile");
+
+const dshm = (deployment?.spec?.template?.spec?.volumes || []).find((v) => v.name === "chatgpt-web-dshm");
+check("/dev/shm is memory-backed and bounded well below the limit",
+  dshm?.emptyDir?.medium === "Memory" && dshm?.emptyDir?.sizeLimit === "512Mi",
+  `medium=${dshm?.emptyDir?.medium} sizeLimit=${dshm?.emptyDir?.sizeLimit} — tmpfs counts against the container limit`);
+
+check("the router points at the bridge over loopback",
+  router?.env?.some((e) => e.name === "CHATGPT_WEB_BASE_URL" && e.value === "http://127.0.0.1:17841"),
+  "a sidecar shares the network namespace, so this should be loopback");
+
+// No Service may expose the console.
+const services = byKind("Service");
+const consolePorts = services.flatMap((s) => (s.spec.ports || []).map((p) => p.targetPort ?? p.port));
+check("no Service exposes the sign-in console (6080)",
+  !consolePorts.includes(6080) && !consolePorts.includes("6080") && !consolePorts.includes("console"),
+  "the console has no authentication of its own — it is reached through the router's proxy");
+
+check("no Service exposes the bridge port (17841)",
+  !consolePorts.includes(17841) && !consolePorts.includes("17841") && !consolePorts.includes("bridge"), "");
+
+const pass = results.filter((r) => r.ok).length;
+console.log(`\n${pass}/${results.length} passed`);
+process.exit(pass === results.length ? 0 : 1);

@@ -84,6 +84,8 @@ export const ADDED_FILES = [
   "scripts/fork/check-claude-accounts.mjs",
   // static preflight on the bridge image, before spending a build on it
   "scripts/fork/preflight-bridge-image.mjs",
+  // validates a Kubernetes bundle against the traps in AGENT-HANDOFF.md
+  "scripts/fork/check-k8s-manifests.mjs",
 ];
 
 /** Artwork the fork reuses from upstream files; regenerated rather than carried. */
