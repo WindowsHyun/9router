@@ -17,7 +17,7 @@ on. Everything below marked NOT VERIFIED is a real gap, not a formality.
 | Service | What it is | Ports |
 |---|---|---|
 | `9router` | the router, **built from this repo** | 20128 |
-| `chatgpt-web` | the ChatGPT Web bridge, built from `docker/chatgpt-web/` | 17841 (internal), 6080 (noVNC — reached through the router's proxy, not published) |
+| `chatgpt-web` | the ChatGPT Web bridge, **headless**, built from `docker/chatgpt-web/` | 17841 (internal), 6080 (sign-in console — idle until used, reached through the router's proxy) |
 | `headroom` | optional context compressor, unchanged from upstream | 8787 |
 
 Two providers need something that is not the router itself, and both now ship
@@ -26,7 +26,50 @@ with it:
 - **claude-cli** runs `claude -p`. `@anthropic-ai/claude-code` is installed
   into the router image at a pinned version.
 - **chatgpt-web** talks to a bridge that drives a signed-in chatgpt.com
-  session in a real browser.
+  session in a real browser — headless, with no desktop resident. See below.
+
+---
+
+## The bridge is headless
+
+This matters most if you read an older version of this file, or the git
+history: the bridge **used to** run Electron's launcher on a permanent Xvfb
+with x11vnc and noVNC beside it. That was a second full Chromium, a GUI, an X
+server and a VNC stack, all resident for the life of the pod, purely so a human
+could sign in once. It is what made the pod heavy.
+
+It now runs the bridge's `managed-chrome` host, where the worker launches
+Chromium itself:
+
+```js
+// src/adapters/chatgpt-web/browser-worker.ts
+this.browser = await chromium.launch({
+  executablePath: this.config.chromeExecutablePath,
+  headless: !this.config.headed, ...
+```
+
+with `headed: false`. Steady state is **bun + a headless Chromium**, and no X
+server at all.
+
+Signing in still needs a browser someone can see, so `login-agent.mjs` starts
+Xvfb, x11vnc and websockify **on demand** when the console is opened, and stops
+them when the login finishes or the console goes idle
+(`LOGIN_IDLE_TIMEOUT_SEC`, default 900).
+
+Two consequences worth knowing:
+
+- **Upstream's `setup` is not used.** `prepareSetup()` throws off macOS for
+  this browser host, and that gate is in the setup path only — `serve` is
+  `loadConfig()` + `startServer()`. So `bootstrap-config.ts` writes
+  config.json using the bridge's own `defaultConfig()` and `saveConfig()`,
+  which keeps the schema and the validation theirs, not ours.
+- **The sign-in flow ends by closing the browser.** `loginToChatGpt` spawns
+  Chrome and waits for it to *exit* before capturing the session. Close the tab
+  instead and nothing is stored. The dashboard card says so.
+
+Anyone upgrading from the launcher image gets their config migrated
+automatically, but **must sign in again**: the launcher kept its session in its
+own profile, not as the storage state the headless worker reads.
 
 ---
 
@@ -381,15 +424,44 @@ as a `StatefulSet` with `replicas: 1` and a PVC at `/data/profile`, or a
 `Deployment` with `strategy.type: Recreate`. Never `RollingUpdate` — two pods
 would briefly share nothing and you would be signing in again.
 
-**2. Shared memory.** Chromium needs more than the default 64 MB:
+**2. Shared memory, and the trap in it.** Chromium needs more than the default
+64 MB:
 
 ```yaml
 volumes:
   - name: dshm
-    emptyDir: { medium: Memory, sizeLimit: 1Gi }
+    emptyDir: { medium: Memory, sizeLimit: 512Mi }
 volumeMounts:
   - { name: dshm, mountPath: /dev/shm }
 ```
+
+**`medium: Memory` is tmpfs, and tmpfs counts against the container's memory
+limit.** So a 1Gi `/dev/shm` silently spends 1Gi of the bridge's limit, and
+when Chromium fills it the container is OOMKilled with nothing in the logs
+explaining why. 512Mi is ample for a single ChatGPT tab and is eight times the
+default; raise it only if you see shared-memory errors, and raise the memory
+limit with it.
+
+**2b. Sizing the bridge.** With the headless bridge the resident set is bun
+plus one Chromium, rather than Electron plus a launcher GUI plus Xvfb plus
+x11vnc plus websockify plus a Chromium. A reasonable starting point:
+
+```yaml
+resources:
+  requests: { cpu: "200m", memory: "512Mi" }
+  limits:   { cpu: "2",    memory: "2Gi" }
+```
+
+Then measure rather than trust that, because nobody has: **these numbers are
+reasoned from the process tree, not observed.**
+
+```bash
+kubectl -n <ns> top pod --containers
+```
+
+Watch it while a request is in flight and again while signing in — signing in
+is the peak, because it temporarily adds Xvfb, x11vnc and a headful Chrome, and
+it is also the only time those exist.
 
 **3. noVNC must not be a Service.** It is an unauthenticated signed-in
 session. Do not expose it through an Ingress or a Service — reach it through

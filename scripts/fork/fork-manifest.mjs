@@ -51,8 +51,12 @@ export const ADDED_FILES = [
   "src/shared/components/ClaudeCliAccountsCard.js",
   "docker/chatgpt-web/Dockerfile",
   "docker/chatgpt-web/entrypoint.sh",
-  "docker/chatgpt-web/smoke/main.js",
-  "docker/chatgpt-web/smoke/package.json",
+  // headless bridge: config bootstrap, on-demand sign-in console, loopback
+  // forwarder for compose, and the build-time browser check
+  "docker/chatgpt-web/bootstrap-config.ts",
+  "docker/chatgpt-web/login-agent.mjs",
+  "docker/chatgpt-web/tcp-forward.mjs",
+  "docker/chatgpt-web/smoke/headless-check.mjs",
   // serves the bridge's sign-in console on 9Router's own origin
   "bridge-vnc-proxy.cjs",
   // tests — their absence means the fork is present but unproven

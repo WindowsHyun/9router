@@ -25,7 +25,13 @@ services:
       # The bridge is a sibling container, not loopback. 9Router accepts any
       # private/container address for it and still refuses public ones, so the
       # ChatGPT session can never be sent off this network.
-      CHATGPT_WEB_BASE_URL: http://chatgpt-web:17841
+      #
+      # 17851, not 17841: the bridge pins its own listen host to 127.0.0.1, so
+      # a sibling container cannot reach it directly. BRIDGE_PUBLISH_PORT below
+      # forwards this port to it. In Kubernetes the bridge is a sidecar sharing
+      # the network namespace, so there it is plain http://127.0.0.1:17841 and
+      # no forwarder is needed.
+      CHATGPT_WEB_BASE_URL: http://chatgpt-web:17851
     depends_on:
       - headroom
 
@@ -36,13 +42,17 @@ services:
     ports:
       - "8787:8787"
 
-  # ChatGPT Web bridge. Signing in to chatgpt.com needs a real browser once, so
-  # this container runs one on a virtual display and publishes it over noVNC.
-  # Sign in from the dashboard: ChatGPT Web bridge → Login, which serves this
-  # window through the router's own origin. It then stays signed in.
+  # ChatGPT Web bridge, headless. The bridge drives a real chatgpt.com session
+  # in a browser, but it runs that browser headless — there is no desktop, no X
+  # server and no VNC in steady state.
+  #
+  # Signing in is the one thing that needs a visible browser, so the container
+  # can start a temporary X server and console on demand: press Login in the
+  # dashboard, sign in, close the browser window, and the console shuts itself
+  # down again. Nothing is resident for it.
   #
   # It is a build, not a pulled image, because upstream publishes desktop
-  # installers rather than a container. First build takes a few minutes.
+  # installers rather than a container.
   chatgpt-web:
     build:
       context: ./docker/chatgpt-web
@@ -53,20 +63,25 @@ services:
         APT_MIRROR_HOST: deb.debian.org
     container_name: 9router-chatgpt-web
     restart: always
+    environment:
+      # Publish the bridge's loopback port for the router, on a second port —
+      # 0.0.0.0:17841 would collide with the bridge's own 127.0.0.1:17841 bind.
+      BRIDGE_PUBLISH_PORT: "17851"
+      # Tear the sign-in console down after this long with nobody connected.
+      LOGIN_IDLE_TIMEOUT_SEC: "900"
     ports:
-      # Sign-in UI, for debugging only — the dashboard's Login button proxies
-      # this same console behind your login, so nothing here needs publishing.
-      # Bound to localhost because the window is a signed-in ChatGPT session
-      # with no authentication of its own.
+      # Sign-in console, for debugging only — the dashboard's Login button
+      # proxies this behind your 9Router login, so nothing here needs
+      # publishing. Bound to localhost because the console has no
+      # authentication of its own.
       - "127.0.0.1:6080:6080"
     volumes:
       - chatgpt-web-profile:/data/profile
     # Chromium needs more than the default 64 MB of shared memory or tabs crash.
     shm_size: "1gb"
-    # 17841 is deliberately NOT published: only 9router needs it, over the
-    # compose network.
+    # Only 9router needs these, over the compose network.
     expose:
-      - "17841"
+      - "17851"
 
 volumes:
   9router-data:
