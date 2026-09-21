@@ -221,6 +221,18 @@ function buildCliPackage() {
     process.exit(1);
   }
 
+  // Serves the ChatGPT Web sign-in console on the router's own origin.
+  // Not fatal: without a bridge configured there is nothing to serve, and
+  // custom-server.js treats it as optional.
+  const vncProxySrc = path.join(appDir, "bridge-vnc-proxy.cjs");
+  if (fs.existsSync(vncProxySrc)) {
+    fs.copyFileSync(vncProxySrc, path.join(cliAppDir, "bridge-vnc-proxy.cjs"));
+    console.log("✅ Copied bridge-vnc-proxy.cjs\n");
+  } else {
+    console.warn("⚠️  bridge-vnc-proxy.cjs not found — the ChatGPT Web sign-in console");
+    console.warn("   will not be served by the packaged CLI.\n");
+  }
+
   // Step 3b: Ensure sql.js (pure JS fallback) bundled in app/cli/app/node_modules.
   // Strip better-sqlite3 (native) — it lives in ~/.9router/runtime to avoid
   // Windows EBUSY during global CLI updates. node:sqlite (Node ≥22.5) is also

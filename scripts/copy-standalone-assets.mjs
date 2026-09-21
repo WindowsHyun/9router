@@ -31,11 +31,16 @@ export function copyStandaloneAssets({ projectRoot = process.cwd(), distDir = pr
   }
 
   // Without it beside server.js the standalone build serves requests unsanitized.
-  const serverWrapperSource = resolve(projectRoot, "custom-server.js");
-  const serverWrapperDestination = resolve(standaloneDir, "custom-server.js");
-  if (existsSync(serverWrapperSource)) {
-    cpSync(serverWrapperSource, serverWrapperDestination, { force: true });
-    console.log(`[standalone-assets] Copied custom-server.js to ${serverWrapperDestination}`);
+  // bridge-vnc-proxy.cjs rides along: custom-server.js requires it, and without
+  // it the ChatGPT Web console is not served (the require fails soft, so the
+  // symptom would be a Login button that quietly does nothing again).
+  for (const file of ["custom-server.js", "bridge-vnc-proxy.cjs"]) {
+    const source = resolve(projectRoot, file);
+    const destination = resolve(standaloneDir, file);
+    if (existsSync(source)) {
+      cpSync(source, destination, { force: true });
+      console.log(`[standalone-assets] Copied ${file} to ${destination}`);
+    }
   }
 }
 
