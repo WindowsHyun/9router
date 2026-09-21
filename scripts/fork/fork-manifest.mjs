@@ -56,6 +56,8 @@ export const ADDED_FILES = [
   "docker/chatgpt-web/bootstrap-config.ts",
   "docker/chatgpt-web/login-agent.mjs",
   "docker/chatgpt-web/tcp-forward.mjs",
+  // router entrypoint: chowns mounted volumes but skips the browser profile
+  "docker/router-entrypoint.sh",
   "docker/chatgpt-web/smoke/browser-check.mjs",
   // serves the bridge's sign-in console on 9Router's own origin
   "bridge-vnc-proxy.cjs",
