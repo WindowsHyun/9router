@@ -46,15 +46,64 @@ with it:
 
 ---
 
+## Bringing it up after a code change
+
+Both images must be rebuilt — the fixes are in the image, not in the
+manifests. A stale router image is why the provider cards showed
+"Local only: CLI token required" even after the guard was fixed.
+
+```bash
+# 1. both images
+docker compose build 2>&1 | tee build.log
+
+# 2. or, for the Harbor/ArgoCD flow
+docker build -t harbor.example.com/library/9router:<tag> .
+docker build -t harbor.example.com/library/9router-chatgpt-web:v5.0.8 docker/chatgpt-web
+docker push harbor.example.com/library/9router:<tag>
+docker push harbor.example.com/library/9router-chatgpt-web:v5.0.8
+# then bump the router tag in deployment.yaml and let ArgoCD sync
+
+# 3. sign in to chatgpt.com, once. noVNC is not a Service by design.
+kubectl -n <ns> port-forward deploy/nine-router 6080:6080
+#   → http://localhost:6080/vnc.html → finish setup → sign in
+
+# 4. confirm
+kubectl -n <ns> exec deploy/nine-router -c chatgpt-web -- \
+  curl -fsS http://127.0.0.1:17841/healthz
+kubectl -n <ns> exec deploy/nine-router -c nine-router -- claude --version
+```
+
+Until step 3 is done, "Bridge offline" is the correct reading, not a bug.
+
+### Running the bridge as a sidecar
+
+Putting it in the router's pod (rather than its own Deployment) is the better
+layout and worth keeping: the two containers share a network namespace, so
+`CHATGPT_WEB_BASE_URL=http://127.0.0.1:17841` is literally true and no Service
+is needed for port 17841 at all.
+
+One thing to fix if you do this: **give the bridge profile its own PVC.** The
+router's entrypoint runs `chown -R node:node /app/data` at every start. Share
+one PVC between the two and that recursive chown walks a whole browser profile
+on every restart — thousands of files — and leaves it owned by `node` while
+the bridge runs as root. It still works, but it is slow and surprising.
+
 ## NOT VERIFIED — start here
 
 ### 1. Neither image has been built
 
-```bash
-docker compose build 2>&1 | tee build.log
-docker compose up -d
-docker compose logs -f chatgpt-web
-```
+The build chain has been verified piece by piece under the pinned bun, but no
+image has been assembled:
+
+| Step | Checked |
+|---|---|
+| every apt package exists in bookworm | yes, including `libasound2` (bookworm is pre-t64) |
+| `bun install --frozen-lockfile --cwd launcher` with the skip flag, under bun 1.4.0 | yes — 334 packages, no `dist/` |
+| the Dockerfile's version read (`bun -e require(...).version`) | yes — returns 41.10.7 |
+| `bun run --cwd launcher build` | yes — writes `launcher/dist/index.html` |
+| the Electron release zip has `electron` at its root | yes |
+| `electron/index.js` resolves through `ELECTRON_OVERRIDE_DIST_PATH` | yes |
+| the image as a whole | **no** |
 
 ### Already hit and fixed: both provider cards showed only "Local only"
 
@@ -101,7 +150,9 @@ Error [ERR_REQUIRE_ESM]: require() of ES Module
 
 `electron/install.js` is CommonJS and `@electron/get` has been ESM-only since
 v5. Bun 1.3.x tolerated the mixed require; 1.4.2 does not, and the unpinned
-installer had pulled 1.4.2.
+installer had pulled 1.4.2. (Bun 1.4.0 does not reproduce it, so the version
+pin alone would probably have been enough — the skip below makes it moot
+either way, which is why both are in place.)
 
 The fix does not try to reconcile the two. It sets
 `ELECTRON_SKIP_BINARY_DOWNLOAD=1` so that script returns early
