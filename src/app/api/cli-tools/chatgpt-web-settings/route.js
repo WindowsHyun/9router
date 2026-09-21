@@ -157,7 +157,9 @@ export async function POST(request) {
       opened: false,
       vncUrl,
       running: health.ok,
-      hint: "Opening the bridge console. Finish the launcher setup and sign in to ChatGPT, then come back.",
+      // Nothing was opened by this response — the caller opens it, and only a
+      // click can (a popup after an await is blocked). Say that accurately.
+      hint: "Open the bridge console, finish the launcher setup and sign in to ChatGPT.",
     });
   }
 

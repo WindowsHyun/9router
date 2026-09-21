@@ -283,6 +283,12 @@ own; the proxy is what adds it, and it always requires a dashboard session
 regardless of `requireLogin`. Reaching :6080 directly stays a debugging
 fallback (`ssh -L` / `kubectl port-forward`), not the normal path.
 
+**With `requireLogin` off, the console returns 403 — by design.** In that mode
+no session cookie is ever minted, and the proxy accepts nothing else. This is
+the one route that does not follow the setting, because it is a desktop signed
+into a real ChatGPT account. To sign in, enable login, do it once, and turn the
+setting back if you want. The 403 body says so.
+
 ---
 
 ## Kubernetes
@@ -316,6 +322,19 @@ loopback with `CHATGPT_WEB_BASE_URL=http://127.0.0.1:17841` and nothing else
 to configure. As a **separate Deployment**, point that variable at its
 Service; the console port is derived from the same host, so override
 `CHATGPT_WEB_VNC_PORT` only if you moved it off 6080.
+
+**3b. WebSocket timeouts on the Ingress.** The console is a long-lived
+WebSocket, and ingress-nginx defaults `proxy-read-timeout` to 60 s — an idle
+noVNC session dies at exactly one minute, which reads like a broken bridge.
+On the router's Ingress:
+
+```yaml
+nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+```
+
+Other controllers have an equivalent; Traefik and HAProxy need the same thing
+said differently. Untested here — there is no cluster on this machine.
 
 **4. The bridge URL.** Set `CHATGPT_WEB_BASE_URL` to the in-cluster service,
 e.g. `http://chatgpt-web.default.svc.cluster.local:17841`. 9Router accepts

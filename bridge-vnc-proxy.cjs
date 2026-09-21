@@ -252,9 +252,14 @@ function createBridgeVncProxy(env = process.env) {
     return url === PREFIX || url.startsWith(`${PREFIX}/`) || url.startsWith(`${PREFIX}?`);
   };
 
+  const DENIED =
+    "Sign in to 9Router first, then open the bridge console from the dashboard.\n"
+    + "This console always requires a dashboard login, even if login is otherwise\n"
+    + "disabled: it is a live desktop signed into your ChatGPT account.\n";
+
   const deny = (res) => {
     res.writeHead(403, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-    res.end("Sign in to 9Router first, then open the bridge console from the dashboard.\n");
+    res.end(DENIED);
   };
 
   function handleRequest(req, res) {
