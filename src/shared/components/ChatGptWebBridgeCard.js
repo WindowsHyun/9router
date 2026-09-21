@@ -103,7 +103,7 @@ export default function ChatGptWebBridgeCard() {
           ) : running ? (
             <Badge variant="warning">Running — not signed in</Badge>
           ) : (
-            <Badge variant="danger">Bridge offline</Badge>
+            <Badge variant="error">Bridge offline</Badge>
           )}
         </div>
       </div>
@@ -135,8 +135,43 @@ export default function ChatGptWebBridgeCard() {
         </div>
       )}
 
+      {status?.baseUrl && !loading && (
+        <p className="mt-3 text-[11px] text-text-muted">
+          Probed <code>{status.baseUrl}</code>
+          {status.baseUrlSource ? ` (from ${status.baseUrlSource})` : ""}
+        </p>
+      )}
+
       {(status?.hint || status?.error || message) && (
-        <p className="mt-3 text-xs text-text-muted">{message || status.error || status.hint}</p>
+        <p className="mt-2 text-xs text-text-muted whitespace-pre-wrap">
+          {message || status.error || status.hint}
+        </p>
+      )}
+
+      {/* Offline has several distinct causes and they are not guessable from
+          the badge. Ordered so the first thing to check is first. */}
+      {!loading && !running && (
+        <div className="mt-3 rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-[11px] text-text-muted">
+          <div className="font-medium text-text-main mb-1">Nothing is answering. In order:</div>
+          <ol className="list-decimal pl-4 space-y-0.5">
+            <li>
+              Is the bridge running at the address above? In Docker or Kubernetes it is a
+              separate container — check that it started, not just 9Router.
+            </li>
+            <li>
+              Is that the right address? A sidecar in the same pod is
+              <code> http://127.0.0.1:17841</code>; a separate service is
+              <code> http://chatgpt-web:17841</code>. Set
+              <code> CHATGPT_WEB_BASE_URL</code> to whichever applies.
+            </li>
+            <li>
+              Signed in yet? chatgpt.com needs one real browser login. The bridge publishes
+              its window on port <code>6080</code> —
+              <code> kubectl port-forward</code> to it and open
+              <code> /vnc.html</code>. Until that is done, offline is expected.
+            </li>
+          </ol>
+        </div>
       )}
 
       {!running && status?.installUrl && (
