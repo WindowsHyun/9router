@@ -230,6 +230,29 @@ read as offline. Three separate causes, all now fixed:
    and a genuinely missing binary looked identical, which sent debugging in
    the wrong direction. The HTTP failure is now reported as itself.
 
+### Caught before shipping: Chromium will not run as root
+
+The bridge passes no `--no-sandbox` anywhere on the Linux path — the login
+spawns Chrome with `--user-data-dir/--new-window` and nothing else, and the
+worker calls `chromium.launch()` with only `executablePath` and
+`headless`. The single occurrence in their tree is in the macOS passkey path.
+This image runs as root, and Chromium refuses that combination outright.
+
+Neither the login nor a routed request would have worked, and the build would
+have been green: the first version of the build check passed `--no-sandbox`
+itself, so it tested a configuration that never runs.
+
+Fixed by attaching the flag to the executable rather than to any call site —
+`/usr/local/bin/chromium-container` execs Chromium with it, and
+`CHROME_EXECUTABLE` points there — which covers both paths without patching
+upstream code that an upgrade would overwrite. The build check now passes no
+arguments of its own, so it fails unless that wrapper works, and it exercises
+headful on a real Xvfb as well as headless.
+
+Running as a non-root user would be better still, and is the obvious next
+hardening step; Chromium's own sandbox then needs unprivileged user
+namespaces, which plenty of clusters restrict.
+
 ### Already hit and fixed: setup step 2, "Browser helper verification exited with status 1"
 
 Reported from a real deployment, after signing in to chatgpt.com succeeded.
