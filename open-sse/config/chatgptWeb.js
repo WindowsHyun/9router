@@ -134,3 +134,50 @@ export const CHATGPT_WEB_RESPONSES_ALLOWLIST = new Set([
   "reasoning", "include", "text", "parallel_tool_calls", "max_output_tokens",
   "temperature", "top_p", "metadata", "prompt_cache_key",
 ]);
+
+/**
+ * Where 9Router republishes the bridge's noVNC console.
+ *
+ * Signing in to chatgpt.com needs a real browser window, and that window is
+ * the launcher's, on the bridge's virtual display. Rather than make
+ * `kubectl port-forward 6080` a prerequisite, the router proxies that console
+ * on its own origin (bridge-vnc-proxy.cjs, wired up in custom-server.js) and
+ * the dashboard just opens it.
+ *
+ * Kept in sync with PREFIX in bridge-vnc-proxy.cjs — which cannot import this
+ * file, because the production image ships open-sse/ but not src/, and the
+ * proxy has to run inside the CJS server wrapper. A test runs both host
+ * validators over one table so they cannot drift.
+ */
+export const CHATGPT_WEB_VNC_PREFIX = "/api/cli-tools/chatgpt-web-vnc";
+export const CHATGPT_WEB_VNC_DEFAULT_PORT = 6080;
+
+/** True when a bridge is configured, i.e. when there is a console to proxy. */
+export function isChatGptWebVncProxyEnabled(env = process.env) {
+  const raw = String(env.CHATGPT_WEB_VNC_URL || env.CHATGPT_WEB_BASE_URL || "").trim();
+  if (!raw) return false;
+  try {
+    return assertBridgeBaseUrl(raw) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The console URL for the dashboard, or null when no bridge is configured.
+ *
+ * noVNC 1.3.0 (what Debian bookworm ships) builds its socket URL as
+ * `ws://<origin>/` + the `path` setting — see app/ui.js: `url += '/' + path`.
+ * So `path` carries **no** leading slash, or the socket would be dialled at
+ * `//api/...` and miss the proxy.
+ */
+export function chatGptWebVncUrl(env = process.env) {
+  if (!isChatGptWebVncProxyEnabled(env)) return null;
+  const socketPath = `${CHATGPT_WEB_VNC_PREFIX.replace(/^\//, "")}/websockify`;
+  const query = new URLSearchParams({
+    path: socketPath,
+    autoconnect: "true",
+    resize: "scale",
+  });
+  return `${CHATGPT_WEB_VNC_PREFIX}/vnc.html?${query.toString()}`;
+}

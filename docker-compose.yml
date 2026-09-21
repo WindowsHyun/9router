@@ -37,8 +37,9 @@ services:
       - "8787:8787"
 
   # ChatGPT Web bridge. Signing in to chatgpt.com needs a real browser once, so
-  # this container runs one on a virtual display and publishes it over noVNC —
-  # open http://localhost:6080/vnc.html, sign in, and it stays signed in.
+  # this container runs one on a virtual display and publishes it over noVNC.
+  # Sign in from the dashboard: ChatGPT Web bridge → Login, which serves this
+  # window through the router's own origin. It then stays signed in.
   #
   # It is a build, not a pulled image, because upstream publishes desktop
   # installers rather than a container. First build takes a few minutes.
@@ -53,8 +54,10 @@ services:
     container_name: 9router-chatgpt-web
     restart: always
     ports:
-      # Sign-in UI. Bound to localhost: this window is a signed-in ChatGPT
-      # session, so it must not be reachable from the rest of the network.
+      # Sign-in UI, for debugging only — the dashboard's Login button proxies
+      # this same console behind your login, so nothing here needs publishing.
+      # Bound to localhost because the window is a signed-in ChatGPT session
+      # with no authentication of its own.
       - "127.0.0.1:6080:6080"
     volumes:
       - chatgpt-web-profile:/data/profile

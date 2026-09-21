@@ -46,6 +46,10 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/custom-server.js ./custom-server.js
+# Required by custom-server.js to serve the ChatGPT Web sign-in console on this
+# origin. The require fails soft, so leaving it out would not crash the server —
+# it would just make the dashboard's Login button do nothing.
+COPY --from=builder /app/bridge-vnc-proxy.cjs ./bridge-vnc-proxy.cjs
 COPY --from=builder /app/open-sse ./open-sse
 # Next file tracing can omit sibling files; MITM runs server.js as a separate process.
 COPY --from=builder /app/src/mitm ./src/mitm
