@@ -1,0 +1,140 @@
+"use server";
+
+import { NextResponse } from "next/server";
+import open from "open";
+import {
+  CHATGPT_WEB_DEFAULT_BASE_URL,
+  CHATGPT_WEB_HEALTH_PATH,
+  CHATGPT_WEB_INSTALL_URL,
+  CHATGPT_WEB_MODELS_PATH,
+  CHATGPT_WEB_MODEL_PREFIX,
+  assertBridgeBaseUrl,
+} from "open-sse/config/chatgptWeb.js";
+
+const PROBE_TIMEOUT_MS = 4000;
+
+// The caller supplies this value, so it is constrained to a loopback origin:
+// otherwise this route is a server-side request forgery primitive that reports
+// status codes, timing and response fragments back to the caller.
+function normalizeBaseUrl(value) {
+  return assertBridgeBaseUrl(value);
+}
+
+async function probe(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    // The bridge binds to loopback; never route this through an outbound proxy,
+    // and never follow a redirect off it.
+    const response = await fetch(url, { signal: controller.signal, cache: "no-store", redirect: "manual" });
+    const text = await response.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* health payloads may be plain text */ }
+    return { ok: response.ok, status: response.status, json, text: text.slice(0, 500) };
+  } catch (e) {
+    return { ok: false, status: 0, error: e.name === "AbortError" ? "timeout" : e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Status for the ChatGPT Web bridge (codex-chatgpt-web).
+ *
+ * The ChatGPT sign-in window belongs to the bridge's own Electron app, so this
+ * route reports whether that daemon is up and which routed models its
+ * authenticated session currently exposes — that is what "logged in" means here.
+ */
+export async function GET(request) {
+  // The batch status endpoint calls this with no request object.
+  let requestedBaseUrl = null;
+  try { requestedBaseUrl = new URL(request.url).searchParams.get("baseUrl"); } catch { /* batch call */ }
+
+  let baseUrl;
+  try {
+    baseUrl = normalizeBaseUrl(requestedBaseUrl);
+  } catch (e) {
+    return NextResponse.json({
+      installed: false, running: false, models: [],
+      baseUrl: CHATGPT_WEB_DEFAULT_BASE_URL,
+      installUrl: CHATGPT_WEB_INSTALL_URL,
+      error: e.message,
+    }, { status: 400 });
+  }
+
+  const health = await probe(`${baseUrl}${CHATGPT_WEB_HEALTH_PATH}`);
+  if (!health.ok) {
+    return NextResponse.json({
+      installed: false,
+      running: false,
+      baseUrl,
+      models: [],
+      installUrl: CHATGPT_WEB_INSTALL_URL,
+      error: health.error || `Daemon not reachable (HTTP ${health.status})`,
+      hint: "Start the codex-chatgpt-web launcher and sign in to ChatGPT inside its window, then retry.",
+    });
+  }
+
+  const catalog = await probe(`${baseUrl}${CHATGPT_WEB_MODELS_PATH}`);
+  const rows = Array.isArray(catalog.json?.data) ? catalog.json.data : [];
+  const models = rows
+    .map((row) => row?.id)
+    .filter((id) => typeof id === "string" && id.startsWith(CHATGPT_WEB_MODEL_PREFIX));
+
+  return NextResponse.json({
+    installed: true,
+    running: true,
+    baseUrl,
+    version: health.json?.version || null,
+    // An authenticated session is what makes the bridge advertise its own rows.
+    signedIn: models.length > 0,
+    models,
+    installUrl: CHATGPT_WEB_INSTALL_URL,
+    error: catalog.ok ? null : `Model catalog unavailable (HTTP ${catalog.status})`,
+    hint: models.length > 0
+      ? null
+      : "Daemon is up but exposes no chatgpt-web/* model — sign in to ChatGPT inside the launcher window.",
+  });
+}
+
+/**
+ * POST { action: "login" } — opens the bridge sign-in surface on the machine
+ * running 9Router. When the daemon is down there is nothing to sign into yet,
+ * so the install page is opened instead.
+ */
+export async function POST(request) {
+  let body = {};
+  try { body = await request.json(); } catch { /* empty body is fine */ }
+
+  let baseUrl;
+  try {
+    baseUrl = normalizeBaseUrl(body.baseUrl);
+  } catch (e) {
+    return NextResponse.json({ opened: false, error: e.message }, { status: 400 });
+  }
+
+  const health = await probe(`${baseUrl}${CHATGPT_WEB_HEALTH_PATH}`);
+  // Only ever a validated loopback origin or the fixed install page — never a
+  // caller-chosen destination opened in the operator's browser.
+  const target = health.ok ? baseUrl : CHATGPT_WEB_INSTALL_URL;
+
+  try {
+    await open(target);
+  } catch (e) {
+    return NextResponse.json({
+      opened: false,
+      target,
+      running: health.ok,
+      error: `Could not open a window on the server host: ${e.message}`,
+    }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    opened: true,
+    target,
+    running: health.ok,
+    hint: health.ok
+      ? "Sign in to ChatGPT inside the launcher window, then refresh this page."
+      : "The bridge is not running. Install and start it, then click Login again.",
+  });
+}

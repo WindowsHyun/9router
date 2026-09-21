@@ -72,6 +72,10 @@ const PROTECTED_API_PATHS = [
 const LOCAL_ONLY_PATHS = [
   "/api/cli-tools/cowork-settings",
   "/api/cli-tools/antigravity-mitm",
+  // Spawns `claude --version` on the host.
+  "/api/cli-tools/claude-cli-settings",
+  // Fetches a caller-supplied URL and can open a window on the host.
+  "/api/cli-tools/chatgpt-web-settings",
   "/api/mcp/",
   "/api/tunnel/tailscale-install",
   "/api/tunnel/tailscale-enable",

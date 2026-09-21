@@ -6,7 +6,7 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null, autoPingSchedule = null }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const proxyDropdownRef = useRef(null);
@@ -26,6 +26,10 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
   const autoPingTooltip = autoPing?.provider === "codex"
     ? "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota."
     : "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.";
+
+  const scheduleTooltip = autoPingSchedule?.summary
+    ? `Cron auto-ping: ${autoPingSchedule.summary}`
+    : "Send a tiny message on a cron schedule so a fresh 5h window opens when you want it to.";
 
   let maskedProxyUrl = "";
   if (boundProxyPool?.proxyUrl || connection.providerSpecificData?.connectionProxyUrl) {
@@ -246,6 +250,17 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               )}
             </div>
           )}
+          {autoPingSchedule && (
+            <Tooltip text={scheduleTooltip}>
+              <button
+                onClick={autoPingSchedule.onOpen}
+                className={`flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPingSchedule.active ? "text-primary" : "text-text-muted hover:text-primary"}`}
+              >
+                <span className="material-symbols-outlined text-[18px]">schedule</span>
+                <span className="text-[10px] leading-tight">Schedule</span>
+              </button>
+            </Tooltip>
+          )}
           {autoPing && (
             <Tooltip text={autoPingTooltip}>
               <button
@@ -309,6 +324,11 @@ ConnectionRow.propTypes = {
   oneByOneStatus: PropTypes.shape({
     state: PropTypes.string,
     error: PropTypes.string,
+  }),
+  autoPingSchedule: PropTypes.shape({
+    active: PropTypes.bool,
+    summary: PropTypes.string,
+    onOpen: PropTypes.func,
   }),
   autoPing: PropTypes.shape({
     on: PropTypes.bool,
