@@ -79,7 +79,13 @@ export default function ClaudeCliAccountsCard() {
         body: JSON.stringify({ id }),
       });
       const data = await res.json();
-      setMessage(data.signedIn ? "Signed in — this account is now active." : "Not signed in yet. Finish /login in the terminal, then press Check again.");
+      // A token account has no terminal session to finish, so telling its owner
+      // to go and run /login was simply wrong — and it is the only kind of
+      // account that works in a container.
+      const finishHint = data.account?.kind === "token"
+        ? "That token was not accepted. Generate a new one with `claude setup-token` and add it again."
+        : "Not signed in yet. Finish /login in the terminal, then press Check again.";
+      setMessage(data.signedIn ? "Signed in — this account is now active." : finishHint);
       await reload();
     } catch (e) {
       setMessage(e.message);

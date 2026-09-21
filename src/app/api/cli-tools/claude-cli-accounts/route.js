@@ -36,12 +36,26 @@ function hostConfigDir() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(process.env.USERPROFILE || process.env.HOME || "", ".claude");
 }
 
+/**
+ * Whether an account can authenticate, by the only two means there are.
+ *
+ * A token account carries its own credential in CLAUDE_CODE_OAUTH_TOKEN, so
+ * there is no directory to inspect — having the token IS being signed in.
+ * Only a config-directory account has a credentials file to look for.
+ *
+ * This lives in one place because it did not: "Check" re-derived it from the
+ * file alone, so it declared every token account signed out and deactivated
+ * it, while the listing showed the same account as signed in.
+ */
+async function accountSignedIn(psd = {}) {
+  if (psd.oauthToken) return true;
+  return isSignedIn(psd.configDir || "");
+}
+
 async function describe(connection) {
   const psd = connection.providerSpecificData || {};
   const configDir = psd.configDir || "";
-  // A token account carries its own credential, so there is no directory to
-  // inspect — having the token IS being signed in.
-  const signedIn = psd.oauthToken ? true : await isSignedIn(configDir);
+  const signedIn = await accountSignedIn(psd);
   return {
     id: connection.id,
     name: connection.name || connection.displayName || "Claude Code account",
@@ -234,8 +248,7 @@ export async function PATCH(request) {
     const target = connections.find((c) => c.id === body.id);
     if (!target) return NextResponse.json({ error: "Account not found" }, { status: 404 });
 
-    const configDir = target.providerSpecificData?.configDir || "";
-    const signedIn = await isSignedIn(configDir);
+    const signedIn = await accountSignedIn(target.providerSpecificData);
 
     await updateProviderConnection(target.id, {
       isActive: signedIn,

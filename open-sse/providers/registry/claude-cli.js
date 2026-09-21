@@ -44,12 +44,25 @@ export default {
     format: "openai",
     forceStream: true,
   },
+  // These map to `claude --model <alias>` (see CLAUDE_CLI_UPSTREAM_MODELS).
+  // Aliases rather than pinned ids, so the CLI keeps resolving "latest" and
+  // this list does not go stale the day a new model ships — the names say what
+  // each alias resolves to in Claude Code 2.1.278, which is where they were
+  // read from.
+  //
+  // Every id below was accepted by the installed CLI. An unknown alias is
+  // rejected with "isn't described by this version's model catalog", so this
+  // is checked, not guessed.
   models: [
-    { id: "claude-cli-default", name: "Claude Code (configured default)", contextLength: 200000 },
-    { id: "claude-cli-opus", name: "Claude Opus (via Claude Code)", contextLength: 200000 },
-    { id: "claude-cli-sonnet", name: "Claude Sonnet (via Claude Code)", contextLength: 200000 },
-    { id: "claude-cli-fable", name: "Claude Fable (via Claude Code)", contextLength: 200000 },
-    { id: "claude-cli-haiku", name: "Claude Haiku (via Claude Code)", contextLength: 200000 },
+    { id: "claude-cli-default", name: "Claude Code (your configured default)", contextLength: 200000 },
+    { id: "claude-cli-opus", name: "Opus (alias → claude-opus-5)", contextLength: 200000 },
+    { id: "claude-cli-opus-1m", name: "Opus, 1M context (opus[1m])", contextLength: 1000000 },
+    // Opus plans, Sonnet executes — Claude Code's own mode, not a model id.
+    { id: "claude-cli-opusplan", name: "Opus plan + Sonnet execute (opusplan)", contextLength: 200000 },
+    { id: "claude-cli-sonnet", name: "Sonnet (alias → claude-sonnet-5)", contextLength: 200000 },
+    { id: "claude-cli-sonnet-1m", name: "Sonnet, 1M context (sonnet[1m])", contextLength: 1000000 },
+    { id: "claude-cli-fable", name: "Fable (alias → claude-fable-5-1)", contextLength: 200000 },
+    { id: "claude-cli-haiku", name: "Haiku (alias → claude-haiku-4-5)", contextLength: 200000 },
   ],
   passthroughModels: true,
 };
