@@ -242,12 +242,24 @@ rather than the message above.
 The Dockerfile deliberately sets **no** heap by default, so the image builds
 exactly as it did before this knob existed.
 
-*Seen once, outside a container, and probably not your problem:* this OOM'd at
-Node's own default (4288 MB on that machine, 64 GB RAM) on a repo checkout
-under a OneDrive-synced path with a stale `.next/dev` cache present, on Node 24
-— the image uses `node:22-alpine`. Peak was over 5.8 GB once the heap was
-raised to 8 GB. Recorded because the symptom is alarming and the cause is
-boring; it has never been reproduced inside the image.
+*One environment where it cannot build at all, and it is not the fork's
+doing.* On a Windows checkout under a OneDrive-synced path, on Node 24
+(the image uses `node:22-alpine`), `npm run build` dies at Node's own default
+heap (4288 MB there, on a 64 GB machine) **and again at `--max-old-space-size=8192`**,
+having climbed to 8170 MB. That is a runaway, not a large build, so raising
+the heap does not fix it.
+
+It was isolated properly rather than guessed at: with everything else held
+constant — same machine, same Node, same `node_modules`, same cleared
+`.next`, same 8 GB heap — **upstream `v0.5.81` with zero fork code OOMs the
+same way** (exit 134 after 23 minutes). So the cause is that environment, and
+the fork's code is not implicated. Untested there: a non-OneDrive path, and
+Node 22.
+
+The practical consequence for anyone working on this repo from such a machine:
+a production build cannot be produced locally, so anything that needs one —
+including running the server against the ChatGPT Web console proxy — has to
+happen in the image or on another host.
 
 ### 3. How to tell it worked
 
