@@ -33,12 +33,23 @@ RUN if [ "$APT_MIRROR_HOST" != "deb.debian.org" ]; then \
 # Electron needs a real GTK/X stack even headless; Xvfb provides the display and
 # x11vnc + noVNC make that display reachable from a browser for the one-time
 # sign-in. fonts-liberation and the CJK fonts keep chatgpt.com legible.
+#
+# The library list is not guesswork. It is every entry from
+# `readelf -d electron | grep NEEDED` on the real 41.10.7 linux-x64 binary,
+# mapped to its bookworm package, minus what glibc provides and libffmpeg.so
+# (which ships inside the Electron zip). Nine of them were previously reachable
+# only as transitive dependencies of the others — libatspi2.0-0, libdbus-1-3,
+# libexpat1, libglib2.0-0, libnspr4, libudev1, libx11-6, libxcb1, libxext6 —
+# and a transitive dependency is exactly what disappears under a base-image
+# bump. Naming them is the difference between "works today" and "works".
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget unzip git \
       xvfb x11vnc novnc websockify x11-utils \
-      libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
+      libcups2 libdrm2 libxkbcommon0 libglib2.0-0 libdbus-1-3 libexpat1 \
+      libx11-6 libxcb1 libxext6 libx11-xcb1 libxss1 libudev1 \
       libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
-      libpango-1.0-0 libcairo2 libgtk-3-0 libx11-xcb1 libxss1 \
+      libpango-1.0-0 libcairo2 libgtk-3-0 \
       fonts-liberation fonts-noto-cjk \
       dbus-x11 xauth tini \
     && rm -rf /var/lib/apt/lists/*

@@ -104,6 +104,7 @@ image has been assembled:
 | the Electron release zip has `electron` at its root | yes |
 | `electron/index.js` resolves through `ELECTRON_OVERRIDE_DIST_PATH` | yes |
 | the renderer builds with `--ignore-scripts` too | yes |
+| every library Electron links against is named in the apt list | yes — from `readelf` on the real binary, run on Linux |
 | the image as a whole | **no** |
 
 **The build now proves the one thing reading could not.** A missing GTK/X
@@ -177,10 +178,14 @@ binary via `require('./')` → `index.js`.
 
 ### 2. Remaining failure points, in the order they would bite
 
-**Debian package names.** `docker/chatgpt-web/Dockerfile` installs
-`libasound2`. Debian's t64 transition renamed several runtime libraries
-(`libasound2t64`, `libcups2t64`). If `apt-get install` fails, read the error
-and use the name it suggests. Bookworm should still be pre-t64; trixie is not.
+**Debian package names.** Lower risk than it was. The library list is now
+derived from `readelf -d electron | grep NEEDED` on the real 41.10.7 linux-x64
+binary rather than guessed, every mapped package was confirmed to exist in
+bookworm, and the nine that were previously only transitive are named
+explicitly. The remaining exposure is a base-image bump: Debian's t64
+transition renames runtime libraries (`libasound2t64`, `libcups2t64`), so
+moving off bookworm means re-checking. If `apt-get install` fails, the error
+names the package.
 
 **Electron sandbox.** Handled: the entrypoint runs the binary directly with
 `--no-sandbox` and sets `ELECTRON_DISABLE_SANDBOX=1`, because the release zip
