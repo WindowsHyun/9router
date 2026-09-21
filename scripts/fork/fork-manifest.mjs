@@ -38,12 +38,21 @@ export const ADDED_FILES = [
   "src/shared/components/AutoPingScheduleModal.js",
   // shared
   "open-sse/utils/concurrencyGate.js",
+  // agent skills — third-party SKILL.md injected into routed requests
+  "open-sse/skills/agentSkills.js",
+  "src/lib/skills/fetchSkill.js",
+  "src/lib/db/repos/agentSkillsRepo.js",
+  "src/lib/db/migrations/002-agent-skills.js",
+  "src/app/api/skills/route.js",
+  "src/app/api/skills/[id]/route.js",
+  "src/shared/components/AgentSkillsCard.js",
   // tests — their absence means the fork is present but unproven
   "tests/unit/claude-cli-executor.test.js",
   "tests/unit/chatgpt-web-executor.test.js",
   "tests/unit/concurrency-gate.test.js",
   "tests/unit/quota-autoping-cron.test.js",
   "tests/unit/forced-sse-client-format.test.js",
+  "tests/unit/agent-skills.test.js",
   "tests/real/claude-cli.real.test.js",
   // docs + tooling
   "FORK-CHANGELOG.md",
@@ -114,8 +123,48 @@ export const PATCHED_FILES = [
   },
   {
     path: "src/shared/components/index.js",
-    markers: ["AutoPingScheduleModal", "ChatGptWebBridgeCard", "ClaudeCliStatusCard"],
-    hint: "Three re-exports.",
+    markers: ["AutoPingScheduleModal", "ChatGptWebBridgeCard", "ClaudeCliStatusCard", "AgentSkillsCard"],
+    hint: "Four re-exports.",
+  },
+  {
+    path: "src/lib/db/schema.js",
+    markers: ["agentSkills:"],
+    hint: "The agentSkills table definition. A fresh database gets every table from here via migration 001; an existing one gets this table from migration 002.",
+  },
+  {
+    path: "src/lib/db/migrations/index.js",
+    markers: ["002-agent-skills.js", "m002"],
+    hint: "Register the migration. If upstream adds its own migration, renumber the fork's to keep versions unique and monotonically increasing — the registry sorts by version.",
+  },
+  {
+    path: "src/lib/db/index.js",
+    markers: ["agentSkillsRepo.js"],
+    hint: "Re-export the repo.",
+  },
+  {
+    path: "src/lib/localDb.js",
+    markers: ["getEnabledAgentSkills"],
+    hint: "The compat shim lists exports explicitly, so a new repo function must be added here too or every import through @/lib/localDb fails at build time.",
+  },
+  {
+    path: "src/models/index.js",
+    markers: ["getEnabledAgentSkills"],
+    hint: "Same list again, one layer up.",
+  },
+  {
+    path: "open-sse/handlers/chatCore.js",
+    markers: ["injectAgentSkills", "agentSkills"],
+    hint: "Takes `agentSkills` in the options object and injects them after the caveman/ponytail block, just before dispatch. Deliberately NOT gated on tokenSaverEnabled: a skill changes how the model answers and costs tokens rather than saving them.",
+  },
+  {
+    path: "src/sse/handlers/chat.js",
+    markers: ["getEnabledAgentSkills"],
+    hint: "Loads the enabled skills per request (a local SQLite read, not a network fetch) and passes them to handleChatCore. The .catch(() => []) is deliberate — a skill must never be the reason a completion fails.",
+  },
+  {
+    path: "src/app/(dashboard)/dashboard/skills/page.js",
+    markers: ["AgentSkillsCard"],
+    hint: "Mounts the Agent Skills card above upstream's static list of 9Router documentation links. Both live under the existing Skills menu.",
   },
   {
     path: "src/app/(dashboard)/dashboard/providers/[id]/ConnectionRow.js",
@@ -152,6 +201,7 @@ export const FORK_PROVIDERS = [
 
 /** Fork test files, run from `tests/`. */
 export const FORK_TESTS = [
+  "unit/agent-skills.test.js",
   "unit/claude-cli-executor.test.js",
   "unit/chatgpt-web-executor.test.js",
   "unit/concurrency-gate.test.js",
