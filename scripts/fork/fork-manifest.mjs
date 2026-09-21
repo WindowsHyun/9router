@@ -56,7 +56,7 @@ export const ADDED_FILES = [
   "docker/chatgpt-web/bootstrap-config.ts",
   "docker/chatgpt-web/login-agent.mjs",
   "docker/chatgpt-web/tcp-forward.mjs",
-  "docker/chatgpt-web/smoke/headless-check.mjs",
+  "docker/chatgpt-web/smoke/browser-check.mjs",
   // serves the bridge's sign-in console on 9Router's own origin
   "bridge-vnc-proxy.cjs",
   // tests — their absence means the fork is present but unproven

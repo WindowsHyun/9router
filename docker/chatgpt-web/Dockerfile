@@ -80,15 +80,46 @@ RUN git clone --depth 1 --branch "${BRIDGE_VERSION}" \
       https://github.com/miuuyy/codex-chatgpt-web . \
     && bun install --frozen-lockfile
 
-ENV CHROME_EXECUTABLE=${CHROME_EXECUTABLE}
+# Chromium refuses to start as root unless --no-sandbox is passed, and this
+# image runs as root. The bridge never passes it: the Linux login spawns
+# Chrome with --user-data-dir/--new-window and nothing else
+# (src/browser-login.ts), and the worker calls chromium.launch() with only
+# executablePath and headless. The single --no-sandbox in their tree is in the
+# macOS passkey path, which is not this one.
+#
+# So the flag is attached to the executable instead of to any call site, which
+# covers both paths — they both spawn config.chromeExecutablePath — without
+# patching upstream code that an upgrade would overwrite. `exec` so Playwright's
+# CDP pipe survives, "$@" so --user-data-dir and the rest pass through.
+#
+# The sandbox is dropped rather than worked around because the container is
+# already the isolation boundary. Running as a non-root user would be better
+# and is the obvious next hardening step, but Chromium's own sandbox then needs
+# unprivileged user namespaces, which plenty of clusters restrict.
+RUN printf '#!/bin/sh\nexec %s --no-sandbox "$@"\n' "${CHROME_EXECUTABLE}" \
+      > /usr/local/bin/chromium-container \
+    && chmod +x /usr/local/bin/chromium-container \
+    && /usr/local/bin/chromium-container --version
 
-# Prove, at build time, that Playwright can actually drive the Chromium in this
-# image — headless, which is how it runs in steady state. `chromium --version`
-# does not answer that: it never starts the browser process tree. A missing
-# library or a seccomp problem fails the build here, with a reason, instead of
-# at 3am in a CrashLoopBackOff.
-COPY smoke/headless-check.mjs /opt/smoke/headless-check.mjs
-RUN bun /opt/smoke/headless-check.mjs
+ENV CHROME_EXECUTABLE=/usr/local/bin/chromium-container
+
+# Prove, at build time, that Playwright can actually drive this image's browser
+# — in both modes, on a real display for the headful one, which is the default.
+# `chromium --version` does not answer that: it never starts the browser
+# process tree, so a missing library, a blocked syscall or a refusal to run as
+# root all still pass it.
+#
+# The check deliberately passes no --no-sandbox of its own, so it only succeeds
+# if the chromium-container wrapper supplies it — which is exactly the thing
+# that would otherwise fail at runtime and nowhere else.
+COPY smoke/browser-check.mjs /opt/smoke/browser-check.mjs
+RUN set -eu; \
+    Xvfb :98 -screen 0 1280x800x24 -nolisten tcp & \
+    xvfb_pid=$!; \
+    for _ in $(seq 1 60); do xdpyinfo -display :98 >/dev/null 2>&1 && break; sleep 0.25; done; \
+    xdpyinfo -display :98 >/dev/null 2>&1 || { echo "Xvfb never came up"; exit 1; }; \
+    DISPLAY=:98 bun /opt/smoke/browser-check.mjs; \
+    kill "$xvfb_pid" 2>/dev/null || true
 
 # NOT /tmp: the bridge refuses to set up when its own runtime path looks
 # ephemeral ("Runtime command must not reference an ephemeral path").
