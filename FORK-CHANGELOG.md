@@ -10,6 +10,30 @@ See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
 ### Features
 
+#### Agent Skills (new)
+
+A **Skills** menu entry now installs third-party `SKILL.md` documents from
+GitHub and toggles each one on or off. An enabled skill is appended to the
+system prompt of every routed request, translated into whatever wire format
+the chosen provider speaks — so the same skill works on Claude, Gemini, Kiro
+and any OpenAI-compatible provider.
+
+- Paste a repo URL (`github.com/owner/repo`), a blob link, or a raw
+  `SKILL.md` link. A repo publishing several skills asks which one.
+- YAML frontmatter supplies the name, description and license; it is stripped
+  from the injected text, since it is runtime metadata the provider cannot act on.
+- The document body is stored in SQLite, so a routed request never depends on
+  GitHub being reachable. "Re-fetch" pulls a newer version on demand.
+- Each skill shows its size and estimated token cost, and the card totals what
+  the enabled set adds to every request — a skill costs tokens rather than
+  saving them, which is worth seeing next to Token Saver.
+- Skills install **disabled**; enabling one is a separate, deliberate action.
+- Only `github.com` and `raw.githubusercontent.com` are accepted, and every
+  fetch goes through the SSRF guard.
+
+Verified against `ayghri/i-have-adhd` (~1,697 tok) and `epoko77-ai/im-not-ai`
+(multi-skill repo, prompts for a choice).
+
 - **ChatGPT Web** (`chatgpt-web` / `cgw`): new provider that routes through the
   [codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web) bridge, turning a signed-in
   chatgpt.com session into an OpenAI Responses endpoint. Sign-in happens inside the bridge's own

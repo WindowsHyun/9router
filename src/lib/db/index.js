@@ -27,6 +27,12 @@ export {
   createProxyPool, updateProxyPool, deleteProxyPool,
 } from "./repos/proxyPoolsRepo.js";
 
+// Agent skills
+export {
+  getAgentSkills, getEnabledAgentSkills, getAgentSkillById,
+  createAgentSkill, updateAgentSkill, deleteAgentSkill,
+} from "./repos/agentSkillsRepo.js";
+
 // API keys
 export {
   getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,

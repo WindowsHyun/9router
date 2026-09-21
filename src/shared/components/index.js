@@ -17,6 +17,7 @@ export { default as OAuthModal } from "./OAuthModal";
 export { default as ModelSelectModal } from "./ModelSelectModal";
 export { default as ManualConfigModal } from "./ManualConfigModal";
 export { default as AutoPingScheduleModal } from "./AutoPingScheduleModal";
+export { default as AgentSkillsCard } from "./AgentSkillsCard";
 export { default as ChatGptWebBridgeCard } from "./ChatGptWebBridgeCard";
 export { default as ClaudeCliStatusCard } from "./ClaudeCliStatusCard";
 export { default as ComboFormModal } from "./ComboFormModal";
