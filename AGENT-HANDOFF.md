@@ -105,9 +105,28 @@ image has been assembled:
 | `electron/index.js` resolves through `ELECTRON_OVERRIDE_DIST_PATH` | yes |
 | the renderer builds with `--ignore-scripts` too | yes |
 | every library Electron links against is named in the apt list | yes — from `readelf` on the real binary, run on Linux |
+| Electron 41.10.7 linux-x64 starts and creates a window on Linux | **yes — the image's own smoke app, run on Linux, exit 0** |
 | the image as a whole | **no** |
 
-**The build now proves the one thing reading could not.** A missing GTK/X
+**The runtime half is no longer a guess.** There is no Docker on the authoring
+machine, but there is a WSL Ubuntu with WSLg, which is enough to download the
+exact `electron-v41.10.7-linux-x64` release the image fetches and run the exact
+smoke app the build stage runs:
+
+```
+unresolved libraries: none
+[smoke] Electron started and created a window
+exit code: 0
+```
+
+So Electron does initialise Chromium and GTK and create a window on Linux
+x86-64 — the question that `electron --version` cannot answer. What that run
+does not cover is bookworm's library set specifically (WSL is Ubuntu noble)
+and Xvfb rather than WSLg as the display. Both are narrow: the package list is
+derived from `readelf` and every name was confirmed present in bookworm, and
+Xvfb is an ordinary X server.
+
+**The build proves the rest.** A missing GTK/X
 library would previously have shown up as a CrashLoopBackOff after deploy.
 The image build starts Xvfb and runs a tiny Electron app that opens a real
 hidden `BrowserWindow`, so an incomplete runtime fails the build, on your
