@@ -60,6 +60,7 @@ export const ADDED_FILES = [
   "tests/unit/agent-skills.test.js",
   "tests/real/claude-cli.real.test.js",
   // docs + tooling
+  "AGENT-HANDOFF.md",
   "FORK-CHANGELOG.md",
   "UPGRADE.md",
   "scripts/fork/fork-manifest.mjs",
