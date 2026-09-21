@@ -14,6 +14,8 @@ import { GET as deepseekTuiGet } from "../deepseek-tui-settings/route";
 import { GET as jcodeGet } from "../jcode-settings/route";
 import { GET as grokBuildGet } from "../grok-build-settings/route";
 import { GET as devinGet } from "../devin-settings/route";
+import { GET as claudeCliGet } from "../claude-cli-settings/route";
+import { GET as chatgptWebGet } from "../chatgpt-web-settings/route";
 
 const STATUS_GETTERS = {
   claude: claudeGet,
@@ -29,6 +31,8 @@ const STATUS_GETTERS = {
   jcode: jcodeGet,
   "grok-build": grokBuildGet,
   devin: devinGet,
+  "claude-cli": claudeCliGet,
+  "chatgpt-web": chatgptWebGet,
 };
 
 // Batch endpoint: gather all CLI tool statuses in one round-trip

@@ -121,8 +121,15 @@ async function runHeavyStartup() {
 }
 
 function hasQuotaAutoPingEnabled(settings) {
-  return [settings?.claudeAutoPing, settings?.codexAutoPing]
-    .some((config) => Object.values(config?.connections || {}).some(Boolean));
+  // Either trigger keeps the scheduler alive: the reset-based per-connection
+  // toggle, or a cron schedule with at least one expression.
+  return [settings?.claudeAutoPing, settings?.codexAutoPing].some((config) =>
+    Object.values(config?.connections || {}).some(Boolean)
+    || Object.values(config?.cron || {}).some(
+      (entry) => entry?.enabled !== false
+        && (Array.isArray(entry?.expressions) ? entry.expressions : []).some((expression) => String(expression || "").trim())
+    )
+  );
 }
 
 async function autoStartMitm(settings) {
