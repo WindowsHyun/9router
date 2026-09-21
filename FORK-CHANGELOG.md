@@ -10,6 +10,38 @@ See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
 ### Features
 
+#### One install brings the local providers with it
+
+Both providers that depend on something outside 9Router now ship with the
+Docker deployment, so `docker compose up -d` is the whole setup.
+
+**Claude Code CLI** — `@anthropic-ai/claude-code` is installed in the image
+(pinned). A container has no terminal for the sign-in TUI, so accounts are
+attached with a token from `claude setup-token`, pasted into the dashboard.
+Several tokens means several accounts, and 9Router falls back between them.
+On a desktop the interactive login still works and each account keeps its own
+Claude Code config directory.
+
+**ChatGPT Web** — a sidecar container runs the official launcher on a virtual
+display and publishes it over noVNC. Open `http://localhost:6080/vnc.html`
+once, sign in to chatgpt.com, and the session persists in a volume; 9Router
+reaches the bridge over the compose network. This is the launcher rather than
+the bun CLI because upstream gates terminal-only setup on macOS
+(`src/setup.ts`: *"Terminal-only managed Chrome setup currently requires
+macOS"*) unless the browser is launcher-owned.
+
+Also fixed along the way:
+
+- A `noAuth` provider now uses its real connection rows when it has any.
+  Upstream returned one synthetic "Public" connection and never looked, which
+  is why multi-account never worked for either provider.
+- The green **Ready** badge no longer appears for a provider that needs local
+  setup — it shows "N Connected" or "No connections" like everything else.
+- The bridge URL may be a container or private-network address, not only
+  loopback. Public hosts and link-local (169.254, the cloud metadata service)
+  are still refused.
+
+
 #### Agent Skills (new)
 
 A **Skills** menu entry now installs third-party `SKILL.md` documents from

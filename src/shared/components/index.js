@@ -20,6 +20,7 @@ export { default as AutoPingScheduleModal } from "./AutoPingScheduleModal";
 export { default as AgentSkillsCard } from "./AgentSkillsCard";
 export { default as ChatGptWebBridgeCard } from "./ChatGptWebBridgeCard";
 export { default as ClaudeCliStatusCard } from "./ClaudeCliStatusCard";
+export { default as ClaudeCliAccountsCard } from "./ClaudeCliAccountsCard";
 export { default as ComboFormModal } from "./ComboFormModal";
 export { default as McpMarketplaceModal } from "./McpMarketplaceModal";
 export { default as UsageStats } from "./UsageStats";
