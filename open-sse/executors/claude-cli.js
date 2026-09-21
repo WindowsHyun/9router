@@ -287,16 +287,21 @@ export function buildClaudeCliArgs({ model, system, maxTurns }) {
  * stored provider key; the CLAUDE_CODE* nesting markers are excluded by omission,
  * which is also what stops Claude Code refusing to run inside another session.
  */
-function buildChildEnv(env = process.env, configDir = "") {
+function buildChildEnv(env = process.env, account = {}) {
   const child = {};
   for (const key of CLAUDE_CLI_ENV_ALLOWLIST) {
     if (env[key] !== undefined) child[key] = env[key];
   }
-  // A connection pins the account by pointing Claude Code at its own config
-  // directory. Absent one, the child inherits whatever the host is signed into.
-  if (typeof configDir === "string" && configDir.trim()) {
-    child.CLAUDE_CONFIG_DIR = configDir.trim();
-  }
+  // Two ways to pin which account runs the request:
+  //   configDir   — a Claude Code config directory, written by an interactive
+  //                 /login. The natural choice on a desktop.
+  //   oauthToken  — a long-lived token from `claude setup-token`. The only
+  //                 choice in a container, where there is no terminal to sign
+  //                 in with. Set last so it wins if both are present.
+  const configDir = typeof account?.configDir === "string" ? account.configDir.trim() : "";
+  const oauthToken = typeof account?.oauthToken === "string" ? account.oauthToken.trim() : "";
+  if (configDir) child.CLAUDE_CONFIG_DIR = configDir;
+  if (oauthToken) child.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
   return child;
 }
 
@@ -480,7 +485,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
     let child;
     try {
       child = spawn(plan.command, plan.args, {
-        env: buildChildEnv(process.env, credentials?.providerSpecificData?.configDir),
+        env: buildChildEnv(process.env, credentials?.providerSpecificData),
         // Never the 9Router process cwd, and never a shared temp dir — see
         // resolveSpawnCwd for why the directory has to be one we created.
         cwd: resolveSpawnCwd(),

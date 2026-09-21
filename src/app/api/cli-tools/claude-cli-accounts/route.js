@@ -37,13 +37,17 @@ function hostConfigDir() {
 }
 
 async function describe(connection) {
-  const configDir = connection.providerSpecificData?.configDir || "";
-  const signedIn = await isSignedIn(configDir);
+  const psd = connection.providerSpecificData || {};
+  const configDir = psd.configDir || "";
+  // A token account carries its own credential, so there is no directory to
+  // inspect — having the token IS being signed in.
+  const signedIn = psd.oauthToken ? true : await isSignedIn(configDir);
   return {
     id: connection.id,
     name: connection.name || connection.displayName || "Claude Code account",
     email: connection.email || "",
     configDir,
+    kind: psd.oauthToken ? "token" : (psd.kind || "isolated"),
     signedIn,
     isActive: connection.isActive !== false,
     testStatus: connection.testStatus,
@@ -126,15 +130,40 @@ export async function GET() {
 // POST — add an account and open its login window, or re-open an existing one
 export async function POST(request) {
   try {
+    const body = await request.json().catch(() => ({}));
+
+    // Token account: the only way to attach an account where no interactive
+    // login is possible, which is the normal case in a container. Generated
+    // with `claude setup-token` on any machine that can run the TUI.
+    if (typeof body.oauthToken === "string" && body.oauthToken.trim()) {
+      const token = body.oauthToken.trim();
+      const existing = await getProviderConnections({ provider: PROVIDER });
+      if (existing.some((c) => c.providerSpecificData?.oauthToken === token)) {
+        return NextResponse.json({ error: "That token is already added." }, { status: 409 });
+      }
+      const created = await createProviderConnection({
+        provider: PROVIDER,
+        authType: "none",
+        accessToken: "cli",
+        name: body.name || `Token account ${existing.length + 1}`,
+        displayName: body.name || `Token account ${existing.length + 1}`,
+        providerSpecificData: { oauthToken: token, kind: "token" },
+        testStatus: "active",
+        isActive: true,
+      });
+      return NextResponse.json({ account: await describe(created) }, { status: 201 });
+    }
+
     const bin = resolveClaudeBin();
     if (!bin) {
       return NextResponse.json(
-        { error: "Claude Code is not installed, or the binary could not be found. Install it, or set CLI_CLAUDE_BIN." },
+        {
+          error: "Claude Code is not installed here. Install it, set CLI_CLAUDE_BIN, "
+            + "or add an account with a token from `claude setup-token`.",
+        },
         { status: 400 },
       );
     }
-
-    const body = await request.json().catch(() => ({}));
 
     // Re-open the login window for an account that exists already.
     if (body.id) {

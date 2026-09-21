@@ -46,6 +46,11 @@ export const ADDED_FILES = [
   "src/app/api/skills/route.js",
   "src/app/api/skills/[id]/route.js",
   "src/shared/components/AgentSkillsCard.js",
+  // local-provider accounts and their Docker packaging
+  "src/app/api/cli-tools/claude-cli-accounts/route.js",
+  "src/shared/components/ClaudeCliAccountsCard.js",
+  "docker/chatgpt-web/Dockerfile",
+  "docker/chatgpt-web/entrypoint.sh",
   // tests — their absence means the fork is present but unproven
   "tests/unit/claude-cli-executor.test.js",
   "tests/unit/chatgpt-web-executor.test.js",
@@ -123,8 +128,43 @@ export const PATCHED_FILES = [
   },
   {
     path: "src/shared/components/index.js",
-    markers: ["AutoPingScheduleModal", "ChatGptWebBridgeCard", "ClaudeCliStatusCard", "AgentSkillsCard"],
-    hint: "Four re-exports.",
+    markers: ["AutoPingScheduleModal", "ChatGptWebBridgeCard", "ClaudeCliStatusCard", "AgentSkillsCard", "ClaudeCliAccountsCard"],
+    hint: "Five re-exports.",
+  },
+  {
+    path: "src/sse/services/auth.js",
+    markers: ["noAuthRows"],
+    hint: "A noAuth provider must use its real connection rows when it has any. Upstream returns a single synthetic Public connection and never looks, which is why multi-account and per-account fallback did not work for claude-cli or chatgpt-web.",
+  },
+  {
+    path: "src/shared/constants/providers.js",
+    markers: ["localSetup", "supportsAccounts"],
+    hint: "The registry-to-UI field mapping is an explicit allowlist, so a new provider field is dropped unless it is listed here too.",
+  },
+  {
+    path: "src/app/(dashboard)/dashboard/providers/page.js",
+    markers: ["!provider.localSetup"],
+    hint: "Upstream shows a green Ready badge for every noAuth provider. noAuth means no API key, not usable - a provider that needs a signed-in CLI or a running bridge must fall through to the real connection count.",
+  },
+  {
+    path: "open-sse/config/chatgptWeb.js",
+    markers: ["isPrivateNetworkHost"],
+    hint: "The bridge URL was loopback-only, which made the supported Docker layout (bridge as a sibling container) impossible. It now accepts loopback, container names and private ranges, and still refuses public hosts and link-local 169.254 (cloud metadata).",
+  },
+  {
+    path: "Dockerfile",
+    markers: ["claude-code", "CLI_CLAUDE_BIN"],
+    hint: "Bundles a pinned @anthropic-ai/claude-code so the claude-cli provider works in the image with nothing else installed, and sets CLI_CLAUDE_BIN and CLAUDE_CONFIG_DIR. (The apk/npm mirror build args are NOT on this branch - they were part of the security work that was dropped.)",
+  },
+  {
+    path: "docker-compose.yml",
+    markers: ["chatgpt-web", "CHATGPT_WEB_BASE_URL"],
+    hint: "Adds the ChatGPT Web bridge sidecar and points 9Router at it over the compose network. Keep port 6080 bound to 127.0.0.1 - it exposes a signed-in ChatGPT session.",
+  },
+  {
+    path: "DOCKER.md",
+    markers: ["claude setup-token", "6080"],
+    hint: "Documents the two local providers: a setup token for Claude Code, noVNC sign-in for the bridge.",
   },
   {
     path: "src/lib/db/schema.js",

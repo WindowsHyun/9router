@@ -8,6 +8,19 @@ Run 9Router in a container. Published image: [`decolua/9router`](https://hub.doc
 
 ## Quick start
 
+`docker run` gives you the router on its own. **`docker compose up` gives you the
+router plus the two providers that need something installed locally** — Claude
+Code and the ChatGPT Web bridge — which is what most people want:
+
+```bash
+cp .env.example .env     # set JWT_SECRET; see the notes in that file
+docker compose up -d
+```
+
+Open http://localhost:20128.
+
+Router only, no local providers:
+
 ```bash
 docker run -d \
   -p 20128:20128 \
@@ -18,6 +31,66 @@ docker run -d \
 ```
 
 App listens on port `20128`. Open: http://localhost:20128
+
+---
+
+## The two local providers
+
+### Claude Code CLI — bundled in the image
+
+`@anthropic-ai/claude-code` is installed in the image, so the **claude-cli**
+provider works with nothing else to install. It runs `claude -p` instead of
+replaying OAuth tokens, which is the point: traffic looks like an ordinary
+Claude Code session.
+
+The container has no terminal for the sign-in TUI, so an account is attached
+with a token instead. On any machine that already has Claude Code:
+
+```bash
+claude setup-token          # prints a long-lived token
+```
+
+Then in the dashboard: **Providers → Claude Code CLI (-p) → Claude Code
+accounts → paste the token**. Add several tokens for several accounts;
+9Router falls back between them like any other provider.
+
+> Each account is one token (in a container) or one Claude Code config
+> directory (on a desktop). Both are per-connection, so accounts never share
+> credentials.
+
+### ChatGPT Web — a sidecar container
+
+Signing in to chatgpt.com needs a real browser once, so the bridge runs one on
+a virtual display inside its own container and publishes it over noVNC.
+
+```bash
+docker compose up -d        # builds the bridge image on first run (a few minutes)
+```
+
+Then, **once**:
+
+1. Open http://localhost:6080/vnc.html
+2. Finish setup in the launcher window and sign in to chatgpt.com
+3. Close the tab — the session is kept in the `9router-chatgpt-web-profile` volume
+
+9Router reaches the bridge at `http://chatgpt-web:17841` over the compose
+network; `CHATGPT_WEB_BASE_URL` is already set for you.
+
+Port `6080` is bound to `127.0.0.1` on purpose: that window is a signed-in
+ChatGPT session and must not be reachable from the rest of your network.
+Port `17841` is not published at all — only 9Router needs it.
+
+**Already running the desktop launcher on your host?** Skip the sidecar and
+point the router at it instead:
+
+```yaml
+    environment:
+      CHATGPT_WEB_BASE_URL: http://host.docker.internal:17841
+```
+
+9Router accepts any loopback, container or private-network address for the
+bridge and refuses public ones, so the session cannot leave your network.
+
 
 ## Manage container
 

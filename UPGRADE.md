@@ -25,11 +25,11 @@ node scripts/fork/upgrade-fork.mjs              # take the newest upstream tag
 
 This matters more than any script: **most of the fork is new files, and new files never conflict.**
 
-- **33 added files** — providers, executors, configs, components, API routes, agent-skill
-  storage and injection, tests, this tooling.
+- **37 added files** — providers, executors, configs, components, API routes, agent-skill
+  storage and injection, local-provider accounts, the bridge's Docker image, tests, this tooling.
   Upstream does not know they exist, so an upgrade cannot break them. They only need to still be
   there afterwards.
-- **20 edited upstream files** — almost all of them a handful of lines that *register* the new
+- **27 edited upstream files** — almost all of them a handful of lines that *register* the new
   files (an import, a map entry, an array item). These are the only places a conflict can happen.
 - **2 generated snapshots** — `tests/__baseline__/*.json`. Upstream adds providers too, so
   these conflict on most releases and are **regenerated, never merged**.

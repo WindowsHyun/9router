@@ -66,13 +66,26 @@ describe("chatgpt-web configuration", () => {
 
   // This value decides where the request — and any bearer token on it — is sent,
   // and the same helper guards the dashboard route against SSRF.
-  it("refuses a bridge URL that is not a loopback http(s) origin", () => {
+  it("refuses a bridge URL that could send the session off the private network", () => {
     for (const bad of [
-      "http://169.254.169.254", "http://10.0.0.5:9000", "https://evil.tld",
-      "file:///etc/passwd", "ftp://127.0.0.1", "not a url", "http://127.0.0.1.evil.tld",
+      // Link-local: 169.254.169.254 is the cloud metadata service, never a bridge.
+      "http://169.254.169.254", "http://169.254.1.1",
+      "https://evil.tld", "http://8.8.8.8:17841",
+      "file:///etc/passwd", "ftp://127.0.0.1", "not a url",
+      // A public name that merely looks loopback.
+      "http://127.0.0.1.evil.tld",
     ]) {
-      expect(() => assertBridgeBaseUrl(bad)).toThrow();
+      expect(() => assertBridgeBaseUrl(bad), `should reject ${bad}`).toThrow();
     }
+  });
+
+  // The supported Docker layout runs the bridge as a sibling container, so a
+  // loopback-only rule would make it unreachable.
+  it("accepts a bridge on a container or private network", () => {
+    expect(assertBridgeBaseUrl("http://chatgpt-web:17841")).toBe("http://chatgpt-web:17841");
+    expect(assertBridgeBaseUrl("http://10.0.0.5:9000")).toBe("http://10.0.0.5:9000");
+    expect(assertBridgeBaseUrl("http://192.168.1.50:17841")).toBe("http://192.168.1.50:17841");
+    expect(assertBridgeBaseUrl("http://bridge.internal:17841")).toBe("http://bridge.internal:17841");
   });
 
   // The provider is noAuth, so auth.js supplies a synthetic connection with no

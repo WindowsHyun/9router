@@ -27,6 +27,21 @@ ENV HOSTNAME=0.0.0.0
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATA_DIR=/app/data
 
+# Claude Code ships inside the image so the claude-cli provider works out of the
+# box — installing 9Router is meant to be the whole install. Pinned, because an
+# unpinned CLI would change what routed requests run on every image rebuild.
+ARG CLAUDE_CODE_VERSION=2.1.278
+ARG NPM_REGISTRY
+RUN npm install -g --registry="${NPM_REGISTRY:-https://registry.npmjs.org}" \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && npm cache clean --force
+# Where the provider looks; CLI_CLAUDE_BIN overrides it.
+ENV CLI_CLAUDE_BIN=/usr/local/bin/claude
+# The container has no terminal for the sign-in TUI, so accounts are attached
+# with a token from `claude setup-token` (run on any machine that has one).
+# The dashboard's Claude Code accounts card takes it.
+ENV CLAUDE_CONFIG_DIR=/app/data-home/claude
+
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/.next/standalone ./
@@ -45,7 +60,7 @@ COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
 COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machine-id
 
 RUN mkdir -p /app/data && chown -R node:node /app && \
-  mkdir -p /app/data-home && chown node:node /app/data-home && \
+  mkdir -p /app/data-home /app/data-home/claude && chown -R node:node /app/data-home && \
   ln -sf /app/data-home /root/.9router 2>/dev/null || true
 
 # Fix permissions at runtime (handles mounted volumes)

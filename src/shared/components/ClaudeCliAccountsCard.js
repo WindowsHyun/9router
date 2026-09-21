@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Badge from "./Badge";
+import Input from "./Input";
 
 const ENDPOINT = "/api/cli-tools/claude-cli-accounts";
 
@@ -21,6 +22,7 @@ export default function ClaudeCliAccountsCard() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [pendingId, setPendingId] = useState(null);
+  const [token, setToken] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -136,6 +138,39 @@ export default function ClaudeCliAccountsCard() {
         </div>
       )}
 
+      {/* A container has no terminal for the sign-in TUI, so a token is the
+          only way to attach an account there. It also works on a desktop. */}
+      <div className="mb-3 rounded-lg border border-border-subtle bg-surface-2 p-3">
+        <div className="text-xs text-text-main mb-1.5">
+          Add an account with a token
+        </div>
+        <p className="text-[11px] text-text-muted mb-2 leading-relaxed">
+          Run <code>claude setup-token</code> on any machine that has Claude Code and paste
+          the result. This is the way to add accounts when 9Router runs in Docker, where there
+          is no terminal for the interactive login. One token per account.
+        </p>
+        <div className="flex gap-2 flex-wrap">
+          <div className="flex-1 min-w-[220px]">
+            <Input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="Paste the token from `claude setup-token`"
+              disabled={busy}
+            />
+          </div>
+          <Button
+            size="sm"
+            onClick={async () => {
+              if (await post({ oauthToken: token })) setToken("");
+            }}
+            disabled={busy || !token.trim()}
+          >
+            Add token account
+          </Button>
+        </div>
+      </div>
+
       <div className="flex gap-2 flex-wrap mb-4">
         {installed && hostSignedIn && !hostAdopted && (
           <Button size="sm" icon="person_add" onClick={() => post({ adoptHost: true })} disabled={busy}>
@@ -167,10 +202,12 @@ export default function ClaudeCliAccountsCard() {
                 )}
                 {!a.isActive && <Badge variant="default" size="sm">Inactive</Badge>}
               </div>
-              <div className="text-[11px] text-text-muted mt-1 break-all">{a.configDir}</div>
+              <div className="text-[11px] text-text-muted mt-1 break-all">
+                {a.kind === "token" ? "Authenticated with a setup token" : a.configDir}
+              </div>
             </div>
             <div className="flex gap-2 shrink-0 flex-wrap">
-              {!a.signedIn && (
+              {!a.signedIn && a.kind !== "token" && (
                 <Button size="sm" variant="secondary" onClick={() => post({ id: a.id })} disabled={busy}>
                   Open login
                 </Button>
