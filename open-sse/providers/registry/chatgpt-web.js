@@ -30,6 +30,12 @@ export default {
   category: "free",
   authType: "none",
   noAuth: true,
+  // noAuth means "no API key", not "ready to use": this provider still needs
+  // something set up on the host (a signed-in CLI, a running bridge). The
+  // dashboard shows real connection counts instead of a blanket Ready badge,
+  // and each connection is one account.
+  localSetup: true,
+  supportsAccounts: true,
   authModes: ["none"],
   transport: {
     baseUrl: `${CHATGPT_WEB_DEFAULT_BASE_URL}${CHATGPT_WEB_RESPONSES_PATH}`,

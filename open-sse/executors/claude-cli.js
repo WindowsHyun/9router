@@ -287,10 +287,15 @@ export function buildClaudeCliArgs({ model, system, maxTurns }) {
  * stored provider key; the CLAUDE_CODE* nesting markers are excluded by omission,
  * which is also what stops Claude Code refusing to run inside another session.
  */
-function buildChildEnv(env = process.env) {
+function buildChildEnv(env = process.env, configDir = "") {
   const child = {};
   for (const key of CLAUDE_CLI_ENV_ALLOWLIST) {
     if (env[key] !== undefined) child[key] = env[key];
+  }
+  // A connection pins the account by pointing Claude Code at its own config
+  // directory. Absent one, the child inherits whatever the host is signed into.
+  if (typeof configDir === "string" && configDir.trim()) {
+    child.CLAUDE_CONFIG_DIR = configDir.trim();
   }
   return child;
 }
@@ -419,7 +424,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
     return null;
   }
 
-  async execute({ model, body, signal, log }) {
+  async execute({ model, body, credentials, signal, log }) {
     const b = body ?? {};
     const messages = Array.isArray(b.messages) ? b.messages : Array.isArray(b.input) ? b.input : [];
     const bin = resolveClaudeBin();
@@ -475,7 +480,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
     let child;
     try {
       child = spawn(plan.command, plan.args, {
-        env: buildChildEnv(),
+        env: buildChildEnv(process.env, credentials?.providerSpecificData?.configDir),
         // Never the 9Router process cwd, and never a shared temp dir — see
         // resolveSpawnCwd for why the directory has to be one we created.
         cwd: resolveSpawnCwd(),

@@ -74,6 +74,8 @@ const LOCAL_ONLY_PATHS = [
   "/api/cli-tools/antigravity-mitm",
   // Spawns `claude --version` on the host.
   "/api/cli-tools/claude-cli-settings",
+  // Creates config directories and opens a terminal window on the host.
+  "/api/cli-tools/claude-cli-accounts",
   // Fetches a caller-supplied URL and can open a window on the host.
   "/api/cli-tools/chatgpt-web-settings",
   "/api/mcp/",

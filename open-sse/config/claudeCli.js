@@ -23,6 +23,11 @@ export const CLAUDE_CLI_ENV_ALLOWLIST = [
   "LANG", "LC_ALL", "TZ", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
   "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
   "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "SHELL", "USER", "LOGNAME",
+  // Selects WHICH Claude Code account runs the request: each connection owns a
+  // config directory, and Claude Code keeps its credentials per directory.
+  // Without this the child always used the default account, so a second
+  // account could be signed in but never reached.
+  "CLAUDE_CONFIG_DIR",
 ];
 
 // The CLI streams within seconds; a longer silence means a hung/blocked child.
