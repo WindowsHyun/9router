@@ -107,7 +107,7 @@ export default function ChatGptWebBridgeCard() {
     if (status?.vncUrl) {
       const opened = window.open(status.vncUrl, "_blank", "noopener,noreferrer");
       setMessage(opened
-        ? "Opened the bridge console in a new tab. Finish the launcher setup, sign in to ChatGPT, and this card will update itself."
+        ? "Opened the sign-in console in a new tab. Sign in to ChatGPT there, then close that browser window — closing it is what saves the session. This card updates itself."
         : "Your browser blocked the popup — allow popups for this site, or open the console from the link below.");
       waitForSignIn(baseUrl);
       return;
@@ -209,11 +209,11 @@ export default function ChatGptWebBridgeCard() {
             <li>
               Signed in yet? chatgpt.com needs one real browser login.
               {vncUrl ? (
-                <> Press <span className="font-medium text-text-main">Login</span> — it opens the
-                  launcher window right here in your browser. Until that is done, offline is expected.</>
+                <> Press <span className="font-medium text-text-main">Login</span> — a browser
+                  opens in a new tab. Until that is done, offline is expected.</>
               ) : (
-                <> The bridge publishes its window on port <code>6080</code>; open
-                  <code> /vnc.html</code> there and finish setup.</>
+                <> The bridge publishes its sign-in console on port <code>6080</code>; open
+                  <code> /vnc.html</code> there.</>
               )}
             </li>
             <li>
@@ -231,12 +231,21 @@ export default function ChatGptWebBridgeCard() {
       )}
 
       {vncUrl && !signedIn && !loading && (
-        <p className="mt-2 text-[11px] text-text-muted">
-          Console:{" "}
-          <a href={vncUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-            open the launcher window
-          </a>
-        </p>
+        <div className="mt-2 text-[11px] text-text-muted">
+          <p>
+            Console:{" "}
+            <a href={vncUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              open the sign-in window
+            </a>
+          </p>
+          {/* The bridge captures the session when the browser exits, not when
+              the page loads — people close the tab instead and lose the login. */}
+          <p className="mt-1">
+            Sign in, then <span className="font-medium text-text-main">close the browser window
+            inside the console</span>. That is what stores the session. The console shuts itself
+            down afterwards, so it costs nothing while you are not using it.
+          </p>
+        </div>
       )}
 
       {!running && status?.installUrl && !vncUrl && (

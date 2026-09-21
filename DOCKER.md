@@ -86,8 +86,8 @@ accounts → paste the token**. Add several tokens for several accounts;
 
 ### ChatGPT Web — a sidecar container
 
-Signing in to chatgpt.com needs a real browser once, so the bridge runs one on
-a virtual display inside its own container and publishes it over noVNC.
+The bridge drives a real chatgpt.com session in a browser, but it runs that
+browser **headless** — no desktop, no X server, no VNC while it is working.
 
 ```bash
 docker compose up -d        # builds the bridge image on first run (a few minutes)
@@ -96,20 +96,28 @@ docker compose up -d        # builds the bridge image on first run (a few minute
 Then, **once**:
 
 1. Open the dashboard → **ChatGPT Web bridge** → **Login**
-2. Finish setup in the launcher window and sign in to chatgpt.com
-3. Close the tab — the session is kept in the `9router-chatgpt-web-profile` volume
+2. Sign in to chatgpt.com in the window that appears
+3. **Close that browser window.** Closing it is what stores the session — the
+   bridge captures it when the browser exits. Closing the tab instead saves
+   nothing.
 
-The card flips to **Signed in** by itself once the session exists; there is
-nothing else to configure. 9Router reaches the bridge at
-`http://chatgpt-web:17841` over the compose network and serves the launcher
-window through its own origin at `/api/cli-tools/chatgpt-web-vnc`, behind
-your dashboard login.
+The session is kept in the `9router-chatgpt-web-profile` volume and the card
+flips to **Signed in** by itself. The temporary X server and console that
+appeared for step 2 shut down on their own afterwards, so they cost nothing
+while you are not signing in.
 
-Port `6080` is bound to `127.0.0.1` on purpose: that window is a signed-in
-ChatGPT session with no authentication of its own, so it must not be
-reachable from the rest of your network. Opening it directly is a debugging
-fallback; the dashboard's Login button is the normal path. Port `17841` is
-not published at all — only 9Router needs it.
+9Router reaches the bridge at `http://chatgpt-web:17851` over the compose
+network — 17851, not 17841, because the bridge pins its own listen address to
+`127.0.0.1` and a sibling container cannot reach that; `BRIDGE_PUBLISH_PORT`
+forwards it. (In Kubernetes the bridge is a sidecar sharing the router's
+network namespace, so there it is plain `http://127.0.0.1:17841` with no
+forwarder.) The sign-in console is served through the router's own origin at
+`/api/cli-tools/chatgpt-web-vnc`, behind your dashboard login.
+
+Port `6080` is bound to `127.0.0.1` on purpose: the console has no
+authentication of its own, so it must not be reachable from the rest of your
+network. Opening it directly is a debugging fallback; the dashboard's Login
+button is the normal path.
 
 **Already running the desktop launcher on your host?** Skip the sidecar and
 point the router at it instead:

@@ -22,13 +22,19 @@ Several tokens means several accounts, and 9Router falls back between them.
 On a desktop the interactive login still works and each account keeps its own
 Claude Code config directory.
 
-**ChatGPT Web** — a sidecar container runs the official launcher on a virtual
-display and publishes it over noVNC, and the router serves that console on its
-own origin behind the dashboard session (`bridge-vnc-proxy.cjs`). Press
-**Login** in the dashboard once, sign in to chatgpt.com, and the session
-persists in a volume; 9Router reaches the bridge over the compose network.
-The proxy replaced a Login button that called `open` server-side — which opens
-a browser on the machine running Node, and so did nothing in a container. This is the launcher rather than
+**ChatGPT Web** — a sidecar container runs the bridge **headless**: the worker
+launches Chromium itself with `headed: false`, so there is no desktop, no X
+server and no VNC in steady state. Press **Login** in the dashboard once and a
+temporary sign-in console starts on demand (`login-agent.mjs`), served through
+the router's own origin behind your dashboard session
+(`bridge-vnc-proxy.cjs`); sign in, close the browser window, and the console
+shuts itself down. The session persists in a volume.
+
+Two things this replaced: a Login button that called `open` server-side —
+which opens a browser on the machine running Node, and so did nothing in a
+container — and an Electron launcher on a permanent Xvfb/x11vnc/noVNC stack,
+which was a second Chromium and a GUI resident forever for a once-per-session
+login. This is the launcher rather than
 the bun CLI because upstream gates terminal-only setup on macOS
 (`src/setup.ts`: *"Terminal-only managed Chrome setup currently requires
 macOS"*) unless the browser is launcher-owned.
