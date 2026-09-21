@@ -9,6 +9,7 @@ import {
   CHATGPT_WEB_MODELS_PATH,
   CHATGPT_WEB_MODEL_PREFIX,
   assertBridgeBaseUrl,
+  resolveChatGptWebBaseUrl,
 } from "open-sse/config/chatgptWeb.js";
 
 const PROBE_TIMEOUT_MS = 4000;
@@ -28,6 +29,18 @@ const PROBE_TIMEOUT_MS = 4000;
 function normalizeBaseUrl(value) {
   if (typeof value === "string" && value.trim()) return assertBridgeBaseUrl(value);
   return resolveChatGptWebBaseUrl(null);
+}
+
+/**
+ * Where the probed address came from.
+ *
+ * Without this, "Bridge offline" covered both "the bridge is down" and "we are
+ * probing the wrong host because CHATGPT_WEB_BASE_URL is not set" — and the
+ * card could not tell them apart, so neither could anyone reading it.
+ */
+function baseUrlSource(requested) {
+  if (typeof requested === "string" && requested.trim()) return "this field";
+  return process.env.CHATGPT_WEB_BASE_URL ? "CHATGPT_WEB_BASE_URL" : "the built-in default";
 }
 
 async function probe(url) {
@@ -72,16 +85,18 @@ export async function GET(request) {
     }, { status: 400 });
   }
 
+  const source = baseUrlSource(requestedBaseUrl);
   const health = await probe(`${baseUrl}${CHATGPT_WEB_HEALTH_PATH}`);
   if (!health.ok) {
     return NextResponse.json({
       installed: false,
       running: false,
       baseUrl,
+      baseUrlSource: source,
       models: [],
       installUrl: CHATGPT_WEB_INSTALL_URL,
       error: health.error || `Daemon not reachable (HTTP ${health.status})`,
-      hint: "Start the codex-chatgpt-web launcher and sign in to ChatGPT inside its window, then retry.",
+      hint: `Nothing answered /healthz at ${baseUrl} (from ${source}).`,
     });
   }
 
