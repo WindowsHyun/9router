@@ -74,6 +74,8 @@ export const ADDED_FILES = [
   "scripts/fork/export-patch.mjs",
   // end-to-end check of the bridge console against a real Next server
   "scripts/fork/check-bridge-console.mjs",
+  // reproduces the Local-only failure both cards showed, and the fix
+  "scripts/fork/check-container-guard.mjs",
 ];
 
 /** Artwork the fork reuses from upstream files; regenerated rather than carried. */
