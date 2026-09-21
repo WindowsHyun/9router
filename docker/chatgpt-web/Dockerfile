@@ -43,24 +43,54 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       dbus-x11 xauth tini \
     && rm -rf /var/lib/apt/lists/*
 
-# Bun runs the bridge itself (the repo declares packageManager bun@1.4.0).
+# Bun runs the bridge itself. Pinned to the version the repo declares as its
+# packageManager — an unpinned installer pulled 1.4.2, whose stricter
+# require()-of-ESM behaviour is what broke the Electron postinstall below.
+ARG BUN_VERSION=1.4.0
 ENV BUN_INSTALL=/usr/local
-RUN curl -fsSL https://bun.sh/install | bash
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
+    && bun --version
 
 WORKDIR /opt/codex-chatgpt-web
 # A pinned tag, not HEAD: an unpinned bridge would change how routed requests
 # behave on every image rebuild.
+# Electron's postinstall (electron/install.js) `require()`s @electron/get,
+# which is ESM-only since v5. Under bun 1.4.2 that fails outright:
+#
+#   Error [ERR_REQUIRE_ESM]: require() of ES Module .../@electron/get/dist/index.js
+#   from .../electron/install.js not supported
+#
+# Skipping that script and fetching the binary directly sidesteps the whole
+# CJS/ESM question and makes the download deterministic. install.js honours
+# this variable with an early return (install.js:14), and electron/index.js
+# resolves the binary through ELECTRON_OVERRIDE_DIST_PATH (index.js:11) —
+# which is what `electron .` ends up calling, via cli.js requiring './'.
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+
 # The renderer is built here, at image build time. The alternative,
 # scripts/start-launcher.ts, runs the launcher in Vite dev mode and re-runs
 # `bun install` on every container start — which needs network at boot and
-# fails without it. Verified locally: with launcher deps installed, the build
-# completes and writes launcher/dist/index.html, and `start` is `electron .`
-# against electron/main.cjs.
+# fails without it.
 RUN git clone --depth 1 --branch "${BRIDGE_VERSION}" \
       https://github.com/miuuyy/codex-chatgpt-web . \
     && bun install --frozen-lockfile \
     && bun install --frozen-lockfile --cwd launcher \
     && bun run --cwd launcher build
+
+# Fetch the Electron the launcher's lockfile actually resolved to, rather than
+# a version pinned twice in two places that can drift apart.
+RUN set -eu; \
+    ELECTRON_VERSION="$(bun -e 'console.log(require("/opt/codex-chatgpt-web/launcher/node_modules/electron/package.json").version)')"; \
+    echo "electron ${ELECTRON_VERSION}"; \
+    curl -fsSL -o /tmp/electron.zip \
+      "https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/electron-v${ELECTRON_VERSION}-linux-x64.zip"; \
+    mkdir -p /opt/electron; \
+    unzip -q /tmp/electron.zip -d /opt/electron; \
+    rm /tmp/electron.zip; \
+    chmod +x /opt/electron/electron; \
+    /opt/electron/electron --version
+
+ENV ELECTRON_OVERRIDE_DIST_PATH=/opt/electron
 
 # NOT /tmp: the bridge refuses to set up when its own runtime path looks
 # ephemeral ("Runtime command must not reference an ephemeral path").

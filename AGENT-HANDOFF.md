@@ -56,18 +56,44 @@ docker compose up -d
 docker compose logs -f chatgpt-web
 ```
 
-### 2. Likely failure points, in the order they would bite
+### Already hit and fixed: Electron's postinstall
+
+The first real build failed here, so it is written down rather than left to be
+rediscovered:
+
+```
+Error [ERR_REQUIRE_ESM]: require() of ES Module
+  .../@electron/get/dist/index.js from .../electron/install.js not supported
+```
+
+`electron/install.js` is CommonJS and `@electron/get` has been ESM-only since
+v5. Bun 1.3.x tolerated the mixed require; 1.4.2 does not, and the unpinned
+installer had pulled 1.4.2.
+
+The fix does not try to reconcile the two. It sets
+`ELECTRON_SKIP_BINARY_DOWNLOAD=1` so that script returns early
+(`install.js:14`), downloads the matching `electron-v<version>-linux-x64.zip`
+straight from the GitHub release, and points `ELECTRON_OVERRIDE_DIST_PATH` at
+it — which is what `electron/index.js:11` resolves through, and therefore what
+`electron .` ends up executing. Bun is pinned to 1.4.0, the version the repo
+declares as its packageManager.
+
+Each link was checked: the skip flag leaves a working install with no `dist`
+directory, the zip has `electron` at its root, and `cli.js` resolves the
+binary via `require('./')` → `index.js`.
+
+### 2. Remaining failure points, in the order they would bite
 
 **Debian package names.** `docker/chatgpt-web/Dockerfile` installs
 `libasound2`. Debian's t64 transition renamed several runtime libraries
 (`libasound2t64`, `libcups2t64`). If `apt-get install` fails, read the error
 and use the name it suggests. Bookworm should still be pre-t64; trixie is not.
 
-**Electron sandbox.** The entrypoint sets `ELECTRON_DISABLE_SANDBOX=1`. If
-Electron still refuses to start ("Running as root without --no-sandbox is not
-supported"), either add `--no-sandbox` to the launcher's Electron args, run
-the container as a non-root user, or give it `--cap-add=SYS_ADMIN`. Prefer a
-non-root user.
+**Electron sandbox.** Handled: the entrypoint runs the binary directly with
+`--no-sandbox` and sets `ELECTRON_DISABLE_SANDBOX=1`, because the release zip
+ships `chrome-sandbox` without the setuid bit and Electron refuses to run as
+root otherwise. Running as a non-root user would be better still and is the
+obvious next hardening step.
 
 **Xvfb timing.** The entrypoint waits for the display with `xdpyinfo` before
 starting Electron. If Electron exits instantly, the display was not up — raise

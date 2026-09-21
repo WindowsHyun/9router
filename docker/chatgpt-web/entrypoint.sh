@@ -51,13 +51,18 @@ else
   log "config found; the launcher will start the bridge on :${BRIDGE_PORT}"
 fi
 
-# Electron cannot use its sandbox as PID 1 in a container without extra
-# capabilities, and this container is already isolated.
-export ELECTRON_DISABLE_SANDBOX=1
 export CODEX_CHATGPT_WEB_HOME="$PROFILE"
 
-# `launcher start` is `electron .` against the renderer built into the image.
-# Deliberately not scripts/start-launcher.ts: that is the from-source dev path
-# and re-installs dependencies on every start.
+# Electron refuses to start as root with its sandbox on, and the shipped
+# chrome-sandbox is not setuid in the release zip. The container is already an
+# isolation boundary, so the sandbox is disabled rather than worked around.
+# ELECTRON_DISABLE_SANDBOX alone does not cover the "running as root" refusal,
+# hence the flag as well.
+export ELECTRON_DISABLE_SANDBOX=1
+
+# The binary directly, not `bun run start` → `electron .`: it is the same
+# process one shim earlier, and it is where --no-sandbox has to go.
+# ELECTRON_OVERRIDE_DIST_PATH points electron/index.js at this same path, so
+# anything in the app that resolves `require("electron")` agrees with us.
 cd /opt/codex-chatgpt-web/launcher
-exec bun run start
+exec "${ELECTRON_OVERRIDE_DIST_PATH:-/opt/electron}/electron" . --no-sandbox
