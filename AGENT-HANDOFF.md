@@ -47,6 +47,8 @@ with it:
 | The console is shut to anyone without a dashboard session | Same run: anonymous HTTP and anonymous WebSocket both refused. Unit tests add wrong-signature, expired, `alg:none`, not-`authenticated` and not-yet-valid — all 403 |
 | The dashboard session never reaches the bridge | Same run: no `Cookie` observed at the bridge on either the HTTP or the WebSocket half |
 | The proxy finds the JWT secret the app generated | Same run with no `JWT_SECRET` in the environment — it read `DATA_DIR/jwt-secret`, which is the production path |
+| "Local only: CLI token required" is fixed for both cards | `scripts/fork/check-container-guard.mjs` — 6/6. **Reproduces it first**: a forwarded request (`X-Forwarded-For`, as an Ingress sends) is refused 403 "Local only" on both card routes. With `KUBERNETES_SERVICE_HOST` set, as every pod has, the same request returns 200 |
+| The container path did not simply open the gate | Same run: unauthenticated request still 403 inside a container; a genuinely local request on a plain host still 200, so desktop behaviour is unchanged |
 
 ---
 
