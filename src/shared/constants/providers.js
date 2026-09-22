@@ -30,6 +30,10 @@ function buildProviderEntry(r) {
     ...(r.regions ? { regions: r.regions, defaultRegion: r.defaultRegion } : {}),
     ...(r.hasProviderSpecificData ? { hasProviderSpecificData: true } : {}),
     ...(r.noAuth ? { noAuth: true } : {}),
+    // noAuth alone does not mean usable: these two still need a signed-in CLI
+    // or a running bridge on the host, and each connection is one account.
+    ...(r.localSetup ? { localSetup: true } : {}),
+    ...(r.supportsAccounts ? { supportsAccounts: true } : {}),
     ...(r.passthroughModels ? { passthroughModels: true } : {}),
     ...(r.hasOAuth ? { hasOAuth: true } : {}),
     ...(r.authModes ? { authModes: r.authModes } : {}),

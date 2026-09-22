@@ -747,7 +747,10 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
                       Disabled
                     </span>
                   </Badge>
-                ) : isNoAuth ? (
+                ) : isNoAuth && !provider.localSetup ? (
+                  // A no-auth provider with nothing to install is usable as-is.
+                  // One that needs a signed-in CLI or a running bridge is not,
+                  // so it falls through to the real connection count below.
                   <Badge variant="success" size="sm" dot>Ready</Badge>
                 ) : (
                   <>

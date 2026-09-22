@@ -68,6 +68,14 @@ export const QUOTA_AUTOPING_CONFIG = {
   pingLeadMs: 5000,                     // fire once reset passes (within tolerance)
   refreshAheadMs: 300000,               // refetch usage when within 5min of reset
   failureCooldownMs: 900000,            // avoid failed ping spam while upstream/auth is unhealthy
+  // Cron mode: operator-scheduled pings ("every 5h send a tiny hi") that open a
+  // fresh 5h window on a fixed clock instead of reacting to the reported resetAt.
+  cronPingText: "Only Hi",
+  cronMaxExpressions: 12,               // per connection — guards the settings blob
+  cronFailureCooldownMs: 300000,
+  // A CLI ping is drained inline inside the tick; without its own deadline a
+  // hung `claude -p` would suspend every provider's pings behind it.
+  cliPingTimeoutMs: 60000,
   providers: {
     claude: {
       settingsKey: "claudeAutoPing",    // preserve existing settings contract
@@ -75,6 +83,8 @@ export const QUOTA_AUTOPING_CONFIG = {
       pingModel: "claude-haiku-4-5-20251001",
       pingText: "hi",
       pingMaxTokens: 1,
+      // Used when a cron schedule opts into via:"cli" (spawns the real binary).
+      cliPingModel: "claude-cli-haiku",
     },
     codex: {
       settingsKey: "codexAutoPing",

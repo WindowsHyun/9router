@@ -403,6 +403,61 @@ amp --model "{{model}}"
       },
     ],
   },
+  "claude-cli": {
+    id: "claude-cli",
+    name: "Claude Code CLI (-p)",
+    image: "/providers/claude-cli.png",
+    color: "#D97757",
+    description: "Local `claude -p` binary driven by the Claude Code CLI provider — no OAuth token replay",
+    configType: "guide",
+    installUrl: "https://claude.com/claude-code",
+    defaultCommand: "claude",
+    notes: [
+      { type: "info", text: "This is a local dependency, not a routed CLI. The Claude Code CLI provider spawns `claude -p` with tools, host settings and MCP disabled, and streams the reply back as OpenAI chunks." },
+      { type: "info", text: "Traffic looks like an ordinary Claude Code session, which is the point: the plain `claude` provider replays an OAuth token from this server and carries a ban risk." },
+      { type: "warning", text: "Install Claude Code and sign in once (`claude` then /login). Tool calling is not supported on this provider." },
+    ],
+    guideSteps: [
+      { step: 1, title: "Install Claude Code", desc: "Install the CLI from claude.com/claude-code.", docsUrl: "https://claude.com/claude-code" },
+      { step: 2, title: "Sign in once", desc: "Run `claude` and complete /login so the binary stores its own credentials." },
+      { step: 3, title: "Use the provider", desc: "Pick any Claude Code CLI model under the Providers tab — no API key field needed." },
+    ],
+    codeBlock: {
+      language: "bash",
+      code: `# Verify the binary 9Router will spawn
+claude --version
+
+# Pin a custom path if it lives somewhere unusual
+# CLI_CLAUDE_BIN=/path/to/claude`,
+    },
+  },
+  "chatgpt-web": {
+    id: "chatgpt-web",
+    name: "ChatGPT Web Bridge",
+    image: "/providers/chatgpt-web.png",
+    color: "#10A37F",
+    description: "codex-chatgpt-web daemon — uses your signed-in chatgpt.com session as an API",
+    configType: "guide",
+    installUrl: "https://github.com/miuuyy/codex-chatgpt-web",
+    docsUrl: "https://github.com/miuuyy/codex-chatgpt-web",
+    notes: [
+      { type: "info", text: "The bridge drives a real ChatGPT web session in its own Electron window and exposes it on loopback as an OpenAI Responses API (default http://127.0.0.1:17841)." },
+      { type: "info", text: "Sign-in happens inside the bridge's window — 9Router never handles your ChatGPT password or cookies." },
+      { type: "warning", text: "Start the launcher before routing requests. The ChatGPT Web provider returns a connection error while the daemon is down." },
+    ],
+    guideSteps: [
+      { step: 1, title: "Install the bridge", desc: "Download codex-chatgpt-web and run its launcher.", docsUrl: "https://github.com/miuuyy/codex-chatgpt-web" },
+      { step: 2, title: "Sign in to ChatGPT", desc: "Complete sign-in inside the launcher window, then keep it running." },
+      { step: 3, title: "Verify from 9Router", desc: "Open the ChatGPT Web provider and click Login — it probes /healthz and lists the routed models." },
+      { step: 4, title: "Custom host (optional)", desc: "Set a connection baseUrl when the bridge runs on another machine or port." },
+    ],
+    codeBlock: {
+      language: "bash",
+      code: `# Check the daemon 9Router will call
+curl http://127.0.0.1:17841/healthz
+curl http://127.0.0.1:17841/v1/models`,
+    },
+  },
   devin: {
     id: "devin",
     name: "Devin CLI",
