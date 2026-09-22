@@ -295,7 +295,6 @@ describe("dashboard guard local-only routes in a container", () => {
   const CONTAINER_PATHS = [
     "/api/cli-tools/claude-cli-settings",
     "/api/cli-tools/claude-cli-accounts",
-    "/api/cli-tools/chatgpt-web-settings",
   ];
 
   // IS_CONTAINER is decided once at module load, so each case needs a fresh

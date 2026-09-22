@@ -127,14 +127,6 @@ async function runHeavyStartup() {
     .then(({ repairClaudeCliAccountsOnce }) => repairClaudeCliAccountsOnce())
     .catch((e) => console.log("[claude-cli] account repair skipped:", e.message));
 
-  // Same shape of problem for the ChatGPT Web bridge: it holds its own session
-  // and routing never needed a connection row, so a signed-in bridge counted as
-  // no connections everywhere. Mirroring it here means an operator who signed in
-  // before this existed does not have to open the card to be counted.
-  import("@/shared/services/chatGptWebConnection")
-    .then(({ syncChatGptWebConnectionFromBridge }) => syncChatGptWebConnectionFromBridge())
-    .catch((e) => console.log("[chatgpt-web] bridge mirror skipped:", e.message));
-
   // Proactive OAuth token refresh (e.g. grok-cli ~6h TTL). Module is idempotent
   // and also started from custom-server.js when that entry is used.
   import("@/sse/services/backgroundTokenRefresh.js")

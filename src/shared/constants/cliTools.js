@@ -431,33 +431,6 @@ claude --version
 # CLI_CLAUDE_BIN=/path/to/claude`,
     },
   },
-  "chatgpt-web": {
-    id: "chatgpt-web",
-    name: "ChatGPT Web Bridge",
-    image: "/providers/chatgpt-web.png",
-    color: "#10A37F",
-    description: "codex-chatgpt-web daemon — uses your signed-in chatgpt.com session as an API",
-    configType: "guide",
-    installUrl: "https://github.com/miuuyy/codex-chatgpt-web",
-    docsUrl: "https://github.com/miuuyy/codex-chatgpt-web",
-    notes: [
-      { type: "info", text: "The bridge drives a real ChatGPT web session in its own Electron window and exposes it on loopback as an OpenAI Responses API (default http://127.0.0.1:17841)." },
-      { type: "info", text: "Sign-in happens inside the bridge's window — 9Router never handles your ChatGPT password or cookies." },
-      { type: "warning", text: "Start the launcher before routing requests. The ChatGPT Web provider returns a connection error while the daemon is down." },
-    ],
-    guideSteps: [
-      { step: 1, title: "Install the bridge", desc: "Download codex-chatgpt-web and run its launcher.", docsUrl: "https://github.com/miuuyy/codex-chatgpt-web" },
-      { step: 2, title: "Sign in to ChatGPT", desc: "Complete sign-in inside the launcher window, then keep it running." },
-      { step: 3, title: "Verify from 9Router", desc: "Open the ChatGPT Web provider and click Login — it probes /healthz and lists the routed models." },
-      { step: 4, title: "Custom host (optional)", desc: "Set a connection baseUrl when the bridge runs on another machine or port." },
-    ],
-    codeBlock: {
-      language: "bash",
-      code: `# Check the daemon 9Router will call
-curl http://127.0.0.1:17841/healthz
-curl http://127.0.0.1:17841/v1/models`,
-    },
-  },
   devin: {
     id: "devin",
     name: "Devin CLI",

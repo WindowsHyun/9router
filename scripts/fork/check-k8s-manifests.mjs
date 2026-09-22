@@ -7,19 +7,11 @@
  * documents resolve — every claimName has a PVC, every mount has a volume,
  * every PVC binds a PV with a matching storage class.
  *
- * The useful one: the traps this particular deployment has to avoid, which are
- * documented in AGENT-HANDOFF.md and are easy to undo by accident —
+ * The useful one: the traps this deployment has to avoid, which are easy to
+ * undo by accident —
  *
- *   - a probe on the bridge sidecar, which makes the whole pod NotReady until
- *     somebody signs in, taking the router offline with it;
- *   - RollingUpdate or replicas > 1, which briefly gives two pods one browser
- *     profile and logs them both out;
- *   - the bridge profile on the router's PVC, which the router chowns
- *     recursively at every start;
- *   - a memory-backed /dev/shm large enough to eat the container's own memory
- *     limit from the inside;
- *   - a Service that exposes the sign-in console, which has no authentication
- *     of its own.
+ *   - RollingUpdate or replicas > 1, which briefly gives two pods one SQLite
+ *     database on a ReadWriteMany volume;
  *
  * Not an admission check: it does not need or replace kubectl.
  */
@@ -67,8 +59,6 @@ check("the router Deployment is present", Boolean(deployment));
 
 const containers = deployment?.spec?.template?.spec?.containers || [];
 const router = containers.find((c) => c.name === "nine-router");
-const bridge = containers.find((c) => c.name === "chatgpt-web");
-check("the chatgpt-web sidecar is back", Boolean(bridge));
 
 // Every claimName the pod asks for must be declared by a PVC in this bundle.
 const claims = new Set(byKind("PersistentVolumeClaim").map((p) => p.metadata.name));
@@ -106,36 +96,7 @@ const nfsPaths = pvs.filter((p) => p.spec.nfs).map((p) => `${p.spec.nfs.server}:
 check("no two PersistentVolumes share an NFS path",
   new Set(nfsPaths).size === nfsPaths.length, nfsPaths.join(", "));
 
-// Nesting one export inside another is allowed, but only where the router
-// knows to leave it alone: docker/router-entrypoint.sh prunes directories
-// named `chatgpt-web-profile` from its recursive chown. Any other nested path
-// would be walked — and re-owned — on every router start.
-// Read out of the entrypoint itself rather than restated here, so the manifest
-// and the script cannot drift apart silently.
-const routerEntrypoint = fs.readFileSync(
-  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "docker", "router-entrypoint.sh"),
-  "utf8",
-);
-const PRUNED_DIR = routerEntrypoint.match(/BRIDGE_PROFILE_DIR_NAME:-([A-Za-z0-9._-]+)/)?.[1];
-check("the router entrypoint declares a directory to prune", Boolean(PRUNED_DIR),
-  "docker/router-entrypoint.sh no longer names a profile directory to skip");
-for (const outer of pvs.filter((p) => p.spec.nfs)) {
-  for (const inner of pvs.filter((p) => p.spec.nfs)) {
-    if (outer === inner) continue;
-    if (outer.spec.nfs.server !== inner.spec.nfs.server) continue;
-    if (!inner.spec.nfs.path.startsWith(`${outer.spec.nfs.path}/`)) continue;
-    check(`${inner.metadata.name} nests inside ${outer.metadata.name}, and the router prunes it`,
-      inner.spec.nfs.path.split("/").pop() === PRUNED_DIR,
-      `${inner.spec.nfs.path} sits inside ${outer.spec.nfs.path}, but only a directory named `
-      + `"${PRUNED_DIR}" is skipped by the router's chown — this one would be walked every start`);
-  }
-}
-
 // The traps this deployment specifically has to avoid.
-check("the bridge has no readiness/liveness probe",
-  bridge && !bridge.readinessProbe && !bridge.livenessProbe,
-  "a probe on the sidecar makes the whole pod NotReady until someone signs in, taking the router offline");
-
 // The hazard is not the sidecar — it is shared single-writer state. Every
 // claim here is ReadWriteMany, so a RollingUpdate does not stall waiting for a
 // volume, it mounts the same one into both pods: two processes on one SQLite
@@ -157,20 +118,10 @@ check("strategy is Recreate, not RollingUpdate",
 
 check("replicas is 1", deployment?.spec?.replicas === 1, `replicas=${deployment?.spec?.replicas}`);
 
-check("the bridge profile is NOT on the router's PVC",
-  (() => {
-    const vols = deployment?.spec?.template?.spec?.volumes || [];
-    const routerClaim = vols.find((v) => v.name === "nine-router-data")?.persistentVolumeClaim?.claimName;
-    const bridgeClaim = vols.find((v) => v.name === "chatgpt-web-profile")?.persistentVolumeClaim?.claimName;
-    return Boolean(routerClaim && bridgeClaim && routerClaim !== bridgeClaim);
-  })(),
-  "the router chowns its data dir recursively at every start; that must not walk a browser profile");
-
 // A tag that is reused across different image contents must be pulled every
-// time. The bridge's tag is the *upstream bridge version*, so it stays v5.0.8
-// while the image behind it changes completely — with IfNotPresent, a node
-// that had pulled an older build keeps serving it and the deploy appears to do
-// nothing at all. A tag carrying a commit sha is content-specific and safe to
+// time. A tag that gets reused for different image contents must be pulled
+// every time, or a node that cached an older build keeps serving it and the
+// deploy appears to do nothing at all. A tag carrying a commit sha is content-specific and safe to
 // cache; `latest` already defaults to Always in Kubernetes.
 for (const c of containers) {
   const tag = String(c.image || "").split(":").pop();
@@ -182,28 +133,6 @@ for (const c of containers) {
     + "different image contents, so a cached copy would be served instead of what you just pushed");
 }
 
-const dshm = (deployment?.spec?.template?.spec?.volumes || []).find((v) => v.name === "chatgpt-web-dshm");
-check("/dev/shm is memory-backed and bounded well below the limit",
-  dshm?.emptyDir?.medium === "Memory" && dshm?.emptyDir?.sizeLimit === "512Mi",
-  `medium=${dshm?.emptyDir?.medium} sizeLimit=${dshm?.emptyDir?.sizeLimit} — tmpfs counts against the container limit`);
-
-check("the router points at the bridge over loopback",
-  router?.env?.some((e) => e.name === "CHATGPT_WEB_BASE_URL" && e.value === "http://127.0.0.1:17841"),
-  "a sidecar shares the network namespace, so this should be loopback");
-
-// No Service may expose the console.
-const services = byKind("Service");
-const consolePorts = services.flatMap((s) => (s.spec.ports || []).map((p) => p.targetPort ?? p.port));
-// Both bridge ports are internal: 17841 carries routed traffic, 17842 accepts
-// a chatgpt.com session. Neither should be reachable from outside the pod.
-for (const [port, name, why] of [
-  [17841, "bridge", "routed traffic belongs to the router, over loopback"],
-  [17842, "session", "it accepts a chatgpt.com session; 9Router gates the route in front of it"],
-]) {
-  check(`no Service exposes the ${name} port (${port})`,
-    !consolePorts.includes(port) && !consolePorts.includes(String(port)) && !consolePorts.includes(name),
-    why);
-}
 
 const pass = results.filter((r) => r.ok).length;
 console.log(`\n${pass}/${results.length} passed`);

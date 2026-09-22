@@ -1090,10 +1090,5 @@
     "baseUrl": "claude-cli://stdio",
     "format": "openai",
     "forceStream": true
-  },
-  "chatgpt-web": {
-    "baseUrl": "http://127.0.0.1:17841/v1/responses",
-    "format": "openai-responses",
-    "forceStream": true
   }
 }

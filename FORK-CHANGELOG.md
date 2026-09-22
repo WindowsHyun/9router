@@ -6,7 +6,46 @@ Kept out of the upstream `CHANGELOG.md` on purpose: upstream rewrites the top of
 that file on every release, so an entry there would conflict on 100% of upgrades.
 See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
-## Unreleased (on top of v0.5.81)
+## Unreleased (on top of v0.5.85)
+
+### Removed
+
+#### The ChatGPT Web provider, and its bridge container
+
+Removed after it was found not to work at all as a routed provider, and it had
+been shipped in a state where connecting succeeded and every request then
+failed.
+
+The codex-chatgpt-web bridge is built for the Codex CLI specifically, not for a
+proxy in front of it. Every request must carry Codex's own turn metadata —
+`client_metadata["x-codex-turn-metadata"]` with `turn_id`/`thread_id`, a
+current-turn user message owning that `turn_id`, and a trusted
+`<environment_context>` naming cwd, absolute roots and a sandbox mode. Without
+it the bridge throws before doing anything:
+
+    ChatGPT web requires native Codex turn_id metadata for browser-turn retry budgeting
+
+This is not a missing field that could be filled in. `trustedEnvironmentText()`
+deliberately refuses to read environment context out of a raw Responses request
+at all — its own comment says parsed system text "has already lost the wire
+provenance needed to distinguish Codex context from user-authored XML, so it
+must never become filesystem authority". Supplying it from a proxy is the exact
+thing that check exists to prevent.
+
+All 47 published bridge tags were checked, down to the first release: every one
+of them requires `turn_id`. There is no version to pin to.
+
+What went with it: the provider registry entry and executor, the session and
+settings routes, the bridge card, the connection mirror, the Docker image under
+`docker/chatgpt-web/`, the compose service, the Kubernetes sidecar and its PVC,
+and the checks that covered them. `docker/router-entrypoint.sh` went too — it
+existed only to keep the router's recursive chown off the browser profile — so
+the runtime entrypoint is upstream's again and that Dockerfile hunk stops being
+a merge conflict.
+
+The Claude Code CLI provider is unaffected.
+
+## Earlier, on top of v0.5.81
 
 ### Features
 

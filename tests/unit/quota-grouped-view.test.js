@@ -15,7 +15,7 @@ describe("grouping connections by provider", () => {
     { id: "a1", provider: "claude" },
     { id: "b1", provider: "codex" },
     { id: "a2", provider: "claude" },
-    { id: "c1", provider: "chatgpt-web" },
+    { id: "c1", provider: "anthropic" },
   ];
 
   it("puts every account of a provider in one group", () => {
@@ -26,7 +26,7 @@ describe("grouping connections by provider", () => {
 
   it("orders providers predictably so cards do not jump around", () => {
     expect(groupConnectionsByProvider(conns).map((g) => g.provider))
-      .toEqual(["chatgpt-web", "claude", "codex"]);
+      .toEqual(["anthropic", "claude", "codex"]);
   });
 
   it("keeps each provider's accounts in the order they arrived", () => {

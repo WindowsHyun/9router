@@ -108,17 +108,11 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home /app/data-home/claude && chown -R node:node /app/data-home && \
   ln -sf /app/data-home /root/.9router 2>/dev/null || true
 
-# Fix permissions at runtime (handles mounted volumes).
-#
-# No `apk upgrade`: upstream dropped it to keep the runtime image reproducible,
-# and installing the entrypoint helper does not need it.
-#
-# A file rather than upstream's printf one-liner, though: this entrypoint has to
-# skip the ChatGPT Web bridge's browser profile when it chowns, or every router
-# start walks and re-owns a browser profile over NFS. See the script.
-RUN apk add --no-cache su-exec
-COPY docker/router-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh && sh -n /entrypoint.sh
+# Avoid a full distribution upgrade in the runtime image. It makes builds less
+# reproducible and is unrelated to installing the runtime entrypoint helper.
+RUN apk add --no-cache su-exec && \
+  printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
+  chmod +x /entrypoint.sh
 
 EXPOSE 20128
 

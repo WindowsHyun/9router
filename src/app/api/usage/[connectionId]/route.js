@@ -141,9 +141,8 @@ export async function GET(request, { params }) {
     const isApikeyEligible =
       isApikeyAuth && USAGE_APIKEY_PROVIDERS.includes(connection.provider);
 
-    // Providers whose credential is local (claude-cli) or held by a bridge
-    // (chatgpt-web) store connections with authType "none" and report no quota
-    // upstream. They are still worth tracking, from what this server routed —
+    // A provider whose credential is local (claude-cli) stores its
+    // connections with authType "none" and reports no quota upstream. They are still worth tracking, from what this server routed —
     // getRoutedUsage says so in its own message and flags every figure
     // unlimited, so nothing is presented as a subscription limit.
     if (USAGE_ROUTED_PROVIDERS.includes(connection.provider)) {

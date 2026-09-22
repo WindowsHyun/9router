@@ -4,10 +4,10 @@
  * The Providers grid counts a provider's connections by filtering the whole
  * connection list down to the ones whose authType this returns. Miss a value
  * and the card reports "No connections" for accounts that exist and work —
- * which is exactly what happened to the `authModes: ["none"]` providers
- * (claude-cli and chatgpt-web): their connections are stored with authType
- * "none", and this collapsed anything without an apikey mode to "oauth"
- * alone, dropping them before their status was ever looked at.
+ * which is exactly what happened to claude-cli, an `authModes: ["none"]`
+ * provider: its connections are stored with authType "none", and this
+ * collapsed anything without an apikey mode to "oauth" alone, dropping it
+ * before its status was ever looked at.
  *
  * Kept out of the page component so it can be tested directly.
  *
