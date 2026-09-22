@@ -741,6 +741,16 @@ export function parseQuotaData(provider, data) {
               used: quota.used || 0,
               total: quota.total || 0,
               resetAt: quota.resetAt || null,
+              // Carried through, not dropped: a provider that reports no limit
+              // sends unlimited:true precisely so no progress bar is drawn for
+              // it. Without these the table fell back to total 0 and drew a
+              // full bar against a limit nobody reported.
+              ...(quota.unlimited === true ? { unlimited: true } : {}),
+              ...(quota.remaining != null ? { remaining: quota.remaining } : {}),
+              ...(quota.remainingPercentage != null
+                ? { remainingPercentage: quota.remainingPercentage }
+                : {}),
+              ...(quota.detail ? { detail: quota.detail } : {}),
             });
           });
         }
@@ -782,4 +792,38 @@ export function parseQuotaData(provider, data) {
   }
 
   return normalizedQuotas;
+}
+
+/**
+ * Group connections for the quota tracker's "By provider" view.
+ *
+ * Kept here rather than inside the component so the grouping and the
+ * pick-an-account fallback can be tested without a DOM — the repo has no
+ * render-test tooling.
+ *
+ * @param {Array<{provider: string, id: string}>} connections
+ * @returns {Array<{provider: string, connections: Array<object>}>} sorted by provider
+ */
+export function groupConnectionsByProvider(connections = []) {
+  const byProvider = new Map();
+  for (const conn of Array.isArray(connections) ? connections : []) {
+    if (!conn?.provider) continue;
+    if (!byProvider.has(conn.provider)) byProvider.set(conn.provider, []);
+    byProvider.get(conn.provider).push(conn);
+  }
+  return [...byProvider.entries()]
+    .map(([provider, conns]) => ({ provider, connections: conns }))
+    .sort((a, b) => a.provider.localeCompare(b.provider));
+}
+
+/**
+ * The account a provider's card should show.
+ *
+ * A stored choice can outlive the account it pointed at — deleted, switched
+ * off, or simply on another page — so it falls back to the first rather than
+ * rendering a card with nothing in it.
+ */
+export function pickGroupedConnection(connections = [], selectedId) {
+  if (!Array.isArray(connections) || connections.length === 0) return null;
+  return connections.find((c) => c.id === selectedId) || connections[0];
 }

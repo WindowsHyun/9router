@@ -101,3 +101,12 @@ graphify-out/*
 .start-dev.ps1
 start-dev-silent.cjs
 debug.log
+# OMC tool state
+.omc
+cli/.omc
+tests/.omc
+
+# Vitest writes this on every run and it embeds the package version
+# ("9Router/0.5.85") in the golden headers, so committing it makes the suite
+# fail on the next version bump. Upstream does not track it either.
+tests/translator/__snapshots__/golden-url-header.test.js.snap
