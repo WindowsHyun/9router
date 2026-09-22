@@ -85,7 +85,13 @@ export default function ClaudeCliAccountsCard() {
       const finishHint = data.account?.kind === "token"
         ? "That token was not accepted. Generate a new one with `claude setup-token` and add it again."
         : "Not signed in yet. Finish /login in the terminal, then press Check again.";
-      setMessage(data.signedIn ? "Signed in — this account is now active." : finishHint);
+      // `verified` means Claude returned an identity, which only happens when
+      // the credential was actually accepted. `signedIn` alone just means one
+      // is present — worth distinguishing, since a stale token looks signed in.
+      const ok = data.verified
+        ? `Verified as ${data.identity.email}${data.identity.orgName ? ` (${data.identity.orgName})` : ""}.`
+        : "A credential is present, but Claude did not return an account for it — it may be expired.";
+      setMessage(data.signedIn ? ok : finishHint);
       await reload();
     } catch (e) {
       setMessage(e.message);
@@ -219,9 +225,21 @@ export default function ClaudeCliAccountsCard() {
                   <Badge variant="warning" size="sm" dot>Awaiting /login</Badge>
                 )}
                 {!a.isActive && <Badge variant="default" size="sm">Inactive</Badge>}
+                {/* Only present once Claude accepted the credential, so it is
+                    the one label here that proves the account really works. */}
+                {a.identity?.subscriptionType && (
+                  <Badge variant="info" size="sm">{a.identity.subscriptionType}</Badge>
+                )}
               </div>
+              {a.identity?.email ? (
+                <div className="text-[11px] text-text-main mt-1 break-all">
+                  {a.identity.email}
+                  {a.identity.orgName ? ` · ${a.identity.orgName}` : ""}
+                </div>
+              ) : null}
               <div className="text-[11px] text-text-muted mt-1 break-all">
                 {a.kind === "token" ? "Authenticated with a setup token" : a.configDir}
+                {!a.identity?.email && " — press Check to confirm it works and read the account"}
               </div>
             </div>
             <div className="flex gap-2 shrink-0 flex-wrap">

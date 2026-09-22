@@ -129,6 +129,13 @@ try {
     checked.json?.account?.isActive === true,
     `isActive=${checked.json?.account?.isActive}`);
 
+  // The token used here is fabricated, so Claude cannot return an account for
+  // it. `signedIn` is still true — a credential is present — but `verified`
+  // must not be, or the card would call a dead token good.
+  check("a fabricated token is signed-in but NOT verified",
+    checked.json?.verified === false && !checked.json?.identity?.email,
+    `verified=${checked.json?.verified} identity=${JSON.stringify(checked.json?.identity)}`);
+
   const after = await call({ method: "GET", path: ROUTE, headers: { cookie } });
   const stillThere = after.json?.accounts?.find((a) => a.id === id);
   check("it survives Check as an active, signed-in account",
@@ -136,6 +143,31 @@ try {
     `signedIn=${stillThere?.signedIn} isActive=${stillThere?.isActive}`);
   check("and is still counted as connected", (after.json?.connectedCount ?? 0) >= 1,
     `connectedCount=${after.json?.connectedCount}`);
+
+  // The old check wrote isActive:false for every token account, leaving one
+  // showing "Signed in" and "Inactive" at once, counting as no connections,
+  // with nothing in the UI to switch it back on. Reconstruct that exact state
+  // and confirm it heals.
+  await call({ method: "PUT", path: `/api/providers/${id}`, headers: json },
+    JSON.stringify({ isActive: false, testStatus: "pending" }));
+  const broken = await call({ method: "GET", path: ROUTE, headers: { cookie } });
+  const healed = broken.json?.accounts?.find((a) => a.id === id);
+  check("an account the old check disabled is re-enabled on load",
+    healed?.isActive === true && healed?.signedIn === true,
+    `isActive=${healed?.isActive} signedIn=${healed?.signedIn}`);
+  check("...and counts as a connection again", (broken.json?.connectedCount ?? 0) >= 1,
+    `connectedCount=${broken.json?.connectedCount}`);
+
+  // Surgical, not a blanket re-enable: an account switched off deliberately
+  // keeps a different testStatus and must be left alone.
+  await call({ method: "PUT", path: `/api/providers/${id}`, headers: json },
+    JSON.stringify({ isActive: false, testStatus: "active" }));
+  const deliberate = await call({ method: "GET", path: ROUTE, headers: { cookie } });
+  check("an account disabled on purpose stays disabled",
+    deliberate.json?.accounts?.find((a) => a.id === id)?.isActive === false,
+    "the repair must not override a deliberate choice");
+  await call({ method: "PUT", path: `/api/providers/${id}`, headers: json },
+    JSON.stringify({ isActive: true, testStatus: "active" }));
 
   // Multi-account is the point of this route existing.
   const second = await call({ method: "POST", path: ROUTE, headers: json },

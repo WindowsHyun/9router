@@ -52,6 +52,65 @@ async function accountSignedIn(psd = {}) {
   return isSignedIn(psd.configDir || "");
 }
 
+/**
+ * Ask Claude Code who an account actually is.
+ *
+ * `claude auth status --json` is the only account-level information the CLI
+ * exposes without a terminal, and it has one subtlety that matters: `loggedIn`
+ * is a *local* check. A deliberately invalid token still reports
+ * `loggedIn: true` with `authMethod: "oauth_token"`, because a credential is
+ * present.
+ *
+ * What it cannot fake is the identity. `email`, `orgName` and
+ * `subscriptionType` only appear when the credential was accepted by the
+ * server — with a bogus token those fields are simply absent. So their
+ * presence, not `loggedIn`, is the signal worth trusting, and it comes with
+ * something worth showing: which account this actually is.
+ *
+ * Spawns the binary, so this belongs on Check and not on every page load.
+ */
+async function accountIdentity(bin, psd = {}, timeoutMs = 30_000) {
+  if (!bin) return null;
+  const env = {};
+  for (const key of ["PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot", "TEMP", "TMP"]) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  if (psd.configDir) env.CLAUDE_CONFIG_DIR = psd.configDir;
+  else if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+  if (psd.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = psd.oauthToken;
+
+  return new Promise((resolve) => {
+    let out = "";
+    let settled = false;
+    const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+    let child;
+    try {
+      child = spawn(bin, ["auth", "status", "--json"], { env, stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      done(null);
+      return;
+    }
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } done(null); }, timeoutMs);
+    child.stdout.on("data", (d) => { out += d; });
+    child.on("error", () => { clearTimeout(timer); done(null); });
+    child.on("close", () => {
+      clearTimeout(timer);
+      try {
+        const json = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1));
+        done({
+          loggedIn: json.loggedIn === true,
+          authMethod: json.authMethod || "",
+          email: typeof json.email === "string" ? json.email : "",
+          orgName: typeof json.orgName === "string" ? json.orgName : "",
+          subscriptionType: typeof json.subscriptionType === "string" ? json.subscriptionType : "",
+        });
+      } catch {
+        done(null);
+      }
+    });
+  });
+}
+
 async function describe(connection) {
   const psd = connection.providerSpecificData || {};
   const configDir = psd.configDir || "";
@@ -66,6 +125,9 @@ async function describe(connection) {
     isActive: connection.isActive !== false,
     testStatus: connection.testStatus,
     createdAt: connection.createdAt,
+    // Recorded by the last Check, when the server accepted the credential.
+    // Absent until then, and absent for a credential that was rejected.
+    identity: psd.identity || null,
   };
 }
 
@@ -119,10 +181,47 @@ function launchLoginWindow(bin, configDir) {
 }
 
 // GET /api/cli-tools/claude-cli-accounts — accounts and their sign-in state
+/**
+ * Undo the damage the old check did.
+ *
+ * It wrote `isActive: false` whenever it decided an account was signed out,
+ * and it decided that for every token account because it looked for a
+ * credentials file they do not have. The result was an account showing
+ * "Signed in" and "Inactive" at once, counting as no connections, with no
+ * control anywhere to re-enable it.
+ *
+ * The fingerprint is exact: inactive, `testStatus` left at "pending", and
+ * actually able to authenticate. This card has never offered a disable
+ * control, so nothing else writes that combination — an account someone
+ * switched off deliberately elsewhere keeps a different testStatus and is left
+ * alone.
+ */
+async function repairAccountsDisabledByTheOldCheck(connections) {
+  const repaired = [];
+  for (const connection of connections) {
+    if (connection.isActive !== false) continue;
+    if (connection.testStatus !== "pending") continue;
+    if (!await accountSignedIn(connection.providerSpecificData)) continue;
+    await updateProviderConnection(connection.id, {
+      isActive: true,
+      testStatus: "active",
+      existingProviderSpecificData: connection.providerSpecificData,
+    });
+    repaired.push(connection.id);
+  }
+  if (repaired.length) {
+    console.log(`[claude-cli] re-enabled ${repaired.length} account(s) disabled by the old check`);
+  }
+  return repaired.length > 0;
+}
+
 export async function GET() {
   try {
     const bin = resolveClaudeBin();
-    const connections = await getProviderConnections({ provider: PROVIDER });
+    let connections = await getProviderConnections({ provider: PROVIDER });
+    if (await repairAccountsDisabledByTheOldCheck(connections)) {
+      connections = await getProviderConnections({ provider: PROVIDER });
+    }
     const accounts = await Promise.all(connections.map(describe));
 
     // With no accounts configured the provider falls back to whatever the host
@@ -250,14 +349,37 @@ export async function PATCH(request) {
 
     const signedIn = await accountSignedIn(target.providerSpecificData);
 
+    // Ask who this account is. An identity comes back only when the server
+    // accepted the credential, so it upgrades "a credential is present" into
+    // "this credential works, and it belongs to <email>" — and gives the card
+    // something better to show than "Token account 1".
+    const identity = await accountIdentity(resolveClaudeBin(), target.providerSpecificData);
+    const verified = Boolean(identity?.email);
+
+    // testStatus records what the check found. isActive records whether the
+    // operator wants the account used, and a check must never clear it: the
+    // previous version wrote `isActive: signedIn`, so one bad check left a
+    // perfectly good account switched off with nothing in the UI to switch it
+    // back on. A successful check may re-enable one, since pressing Check is a
+    // deliberate act — a failing one leaves it alone.
     await updateProviderConnection(target.id, {
-      isActive: signedIn,
+      ...(signedIn ? { isActive: true } : {}),
       testStatus: signedIn ? "active" : "pending",
-      existingProviderSpecificData: target.providerSpecificData,
+      ...(identity?.email ? { email: identity.email } : {}),
+      existingProviderSpecificData: {
+        ...target.providerSpecificData,
+        ...(identity ? { identity } : {}),
+      },
     });
 
     const [refreshed] = (await getProviderConnections({ provider: PROVIDER })).filter((c) => c.id === target.id);
-    return NextResponse.json({ account: await describe(refreshed || target), signedIn });
+    return NextResponse.json({
+      account: await describe(refreshed || target),
+      signedIn,
+      // Distinguishes "a credential is present" from "the server accepted it".
+      verified,
+      identity,
+    });
   } catch (error) {
     console.log("Error checking claude-cli account:", error);
     return NextResponse.json({ error: "Failed to check account" }, { status: 500 });
