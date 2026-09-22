@@ -96,7 +96,9 @@ own profile, not as the storage state this reads.
 |---|---|
 | `CLAUDE_CONFIG_DIR` isolates Claude Code accounts | Ran `claude -p` against the default dir (answered) and an empty dir ("Not logged in") |
 | A connection's account really is used at request time | Pointed a connection's `configDir` at an empty dir → request failed "Not logged in"; restored it → 200 "PONG" |
-| Token accounts work and support multiple accounts | Live API: two token accounts, both reported connected, duplicate token refused with 409 |
+| A token account authenticates **as itself** | Live, and the earlier evidence for this was circular — the dashboard called a token account "connected" because a token was present, which says nothing about whether Claude Code uses it. Settled with a deliberately invalid token: `CLAUDE_CODE_OAUTH_TOKEN=<bogus>` returns `401 OAuth access token is invalid` **even with a signed-in config directory present**, so the token wins and each account is its own. An empty config dir with no token says `Not logged in` instead, so the two failures are distinguishable. Both in `tests/real/claude-cli.real.test.js` |
+| The executor hands each account the right credential | `buildChildEnv`: a token account gets `CLAUDE_CODE_OAUTH_TOKEN` (and keeps the image's `CLAUDE_CONFIG_DIR`, which the token overrides); a directory account gets its own `CLAUDE_CONFIG_DIR` and no token; no account inherits the image default |
+| Two token accounts can coexist | Live API: both reported connected, a duplicate token refused with 409 |
 | `CLAUDE_CODE_OAUTH_TOKEN` is a real Claude Code input | Found in the shipped binary |
 | The bridge's terminal-only setup is macOS-only | Reproduced: `Terminal-only managed Chrome setup currently requires macOS`, with and without `--chrome` |
 | The launcher owns the bridge runtime | `launcher/electron/runtime-supervisor.cjs` spawns it; running `cli.ts serve` too would fight for the port |

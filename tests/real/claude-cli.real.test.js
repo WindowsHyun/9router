@@ -144,3 +144,53 @@ describe.skipIf(!enabled)("claude-cli executor (live)", () => {
     expect(claudeCliGateStats().active).toBe(before);
   }, 120000);
 });
+
+/**
+ * Does a token account actually authenticate as itself?
+ *
+ * Worth asking, because the dashboard's answer was circular: it reported a
+ * token account "connected" because a token was present, which says nothing
+ * about whether Claude Code uses it. And in a container the child inherits
+ * CLAUDE_CONFIG_DIR from the image, so a token account's process sees *both* a
+ * config directory and a token. If the directory won, every token account
+ * would silently route through whichever account that directory holds, and
+ * multi-account would be a fiction.
+ *
+ * A deliberately invalid token settles it without needing a valid one: if
+ * Claude Code uses it, the API rejects it; if it ignores it in favour of the
+ * config directory, the request succeeds instead.
+ */
+describe.skipIf(!enabled)("claude-cli token precedence (live)", () => {
+  const BOGUS = "sk-ant-oat01-bogus-not-a-real-token";
+
+  async function run(env) {
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync(resolveClaudeBin(), ["-p", "say ok"], {
+      env: { ...process.env, ...env },
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+    return `${result.stdout || ""}${result.stderr || ""}`;
+  }
+
+  it("uses CLAUDE_CODE_OAUTH_TOKEN even when a signed-in config directory is present",
+    async () => {
+      const out = await run({ CLAUDE_CODE_OAUTH_TOKEN: BOGUS });
+      // 401 proves the token reached the API. A success would prove the
+      // opposite — that the config directory was used and the token dropped.
+      expect(out).toMatch(/401|OAuth access token is invalid|Failed to authenticate/i);
+    }, 130_000);
+
+  it("reports a missing credential differently from a rejected one", async () => {
+    const dir = fs.mkdtempSync(`${process.env.TEMP || "/tmp"}/9r-empty-claude-`);
+    try {
+      const noCredential = await run({ CLAUDE_CONFIG_DIR: dir, CLAUDE_CODE_OAUTH_TOKEN: "" });
+      expect(noCredential).toMatch(/Not logged in|\/login/i);
+
+      const rejected = await run({ CLAUDE_CONFIG_DIR: dir, CLAUDE_CODE_OAUTH_TOKEN: BOGUS });
+      expect(rejected).toMatch(/401|OAuth access token is invalid/i);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 260_000);
+});
