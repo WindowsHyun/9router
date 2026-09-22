@@ -8,9 +8,9 @@
  *
  * None of that is inherent. The storage state is cookies, and cookies can be
  * handed over. So the dashboard collects a chatgpt.com session, posts it here,
- * and this writes the state and then verifies it the way upstream does —
- * with the bridge's own `inspectBrowserLoginCapabilities`, which opens the
- * account in a real browser and reads back which models it can use.
+ * and this writes the state and then verifies it the way upstream does — using
+ * the bridge's own assertions and capability probe, which open the account in
+ * a real browser and read back which models it can use.
  *
  * That verification is the point. Writing cookies to disk and hoping would
  * hand back a green light that means nothing; this only reports success if
@@ -32,9 +32,16 @@ const {
   sanitizeBrowserLoginStorageState,
   loginVerificationMarkerPath,
   browserLoginStateExists,
-  inspectBrowserLoginCapabilities,
   storedBrowserLoginCapabilities,
 } = await import(`${BRIDGE_ROOT}/src/browser-login`);
+const {
+  CHATGPT_TEMPORARY_CHAT_URL,
+  CHATGPT_COMPOSER_SELECTOR,
+  assertAuthenticatedChatGptPage,
+  assertTemporaryChatPage,
+  detectChatGptAccountCapabilities,
+} = await import(`${BRIDGE_ROOT}/src/chatgpt-session`);
+const { chromium } = await import(`${BRIDGE_ROOT}/node_modules/playwright-core/index.js`);
 
 const log = (...a) => console.log("[session-agent]", ...a);
 
@@ -77,6 +84,72 @@ function forget(config) {
   }
 }
 
+/** Cloudflare's interstitial, in whatever language the account is set to. */
+const CHALLENGE = /just a moment|checking your browser|잠시만|un momento|einen moment/i;
+
+/**
+ * Verify the stored session by opening the account, the way upstream does —
+ * with one line replaced.
+ *
+ * Upstream's `inspectBrowserLoginCapabilities` waits for a textbox whose
+ * *accessible name* is the English string "Chat with ChatGPT". On an account
+ * whose UI is not English that never matches: a Korean account's composer is
+ * labelled "ChatGPT와 채팅", so verification times out after 60s and a working
+ * session gets reported as rejected. Their own login path does not have this
+ * problem, because it falls back to a CSS selector — this uses that same
+ * locale-independent selector, which they export for exactly this purpose.
+ *
+ * Everything else here is theirs: the assertions and the capability probe.
+ *
+ * Cloudflare is called out separately. A challenge that never clears is a
+ * different problem with a different fix (usually headless, or an address the
+ * bot management does not like), and reporting it as a bad session would send
+ * someone off to re-copy a cookie that was fine.
+ */
+async function verifyStoredSession(config) {
+  const browser = await chromium.launch({
+    executablePath: config.chromeExecutablePath,
+    headless: !config.headed,
+    ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
+    args: ["--no-first-run", "--no-default-browser-check"],
+  });
+  try {
+    const context = await browser.newContext({ storageState: config.storageStatePath });
+    try {
+      const page = await context.newPage();
+      await page.goto(CHATGPT_TEMPORARY_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+
+      // The composer appearing is the signal. Poll rather than one long wait,
+      // so a stuck challenge can be named instead of timing out anonymously.
+      const deadline = Date.now() + 90_000;
+      let challenged = false;
+      for (;;) {
+        if (await page.locator(CHATGPT_COMPOSER_SELECTOR).first().isVisible().catch(() => false)) break;
+        challenged = CHALLENGE.test(await page.title().catch(() => ""));
+        if (Date.now() > deadline) {
+          throw new Error(challenged
+            ? "Cloudflare did not let the browser through (its challenge page never cleared). "
+              + "The session itself may be fine. This is what happens when the bridge runs "
+              + "headless, so check BRIDGE_HEADLESS is not set, and note that some hosting "
+              + "addresses are challenged regardless."
+            : "the ChatGPT composer never appeared, so the account did not load signed in");
+        }
+        await page.waitForTimeout(2_000);
+      }
+
+      await assertAuthenticatedChatGptPage(page);
+      await assertTemporaryChatPage(page);
+      const capabilities = await detectChatGptAccountCapabilities(page);
+      log(`verified on ${page.url()}`);
+      return capabilities;
+    } finally {
+      await context.close();
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
 async function connect(payload) {
   const config = loadConfig();
   const state = sanitizeBrowserLoginStorageState({
@@ -88,27 +161,28 @@ async function connect(payload) {
   }
 
   atomicWriteFile(config.storageStatePath, `${JSON.stringify(state)}\n`);
-  // inspectBrowserLoginCapabilities refuses to run unless the state already
-  // looks verified, so this provisional marker is what lets it open the
-  // account at all. It is replaced by the real one on success, and deleted
-  // along with the state on failure — a half-written session that reports
-  // itself as signed in would be worse than none.
-  atomicWriteFile(
-    loginVerificationMarkerPath(config.storageStatePath),
-    `${JSON.stringify({ version: 1, authenticated: true, verifiedAt: new Date().toISOString() })}\n`,
-  );
 
   try {
-    const capabilities = await inspectBrowserLoginCapabilities(config);
+    const capabilities = await verifyStoredSession(config);
+    // Written only now, and only with what the account really has. Nothing
+    // reports itself signed in until the browser has proved it.
+    atomicWriteFile(
+      loginVerificationMarkerPath(config.storageStatePath),
+      `${JSON.stringify({
+        version: 1,
+        authenticated: true,
+        verifiedAt: new Date().toISOString(),
+        ...capabilities,
+      })}\n`,
+    );
     log("session verified:", JSON.stringify(capabilities));
     return { ...status(), capabilities };
   } catch (error) {
     forget(config);
-    throw new Error(
-      `ChatGPT did not accept that session: ${error.message}. `
-      + "The cookies may be expired, from a different account, or missing "
-      + "__Secure-next-auth.session-token.",
-    );
+    // Not always the session's fault, so do not insist that it is — the
+    // message from verifyStoredSession distinguishes a Cloudflare challenge
+    // from an account that loaded signed out.
+    throw new Error(`Could not verify that session: ${error.message}`);
   }
 }
 

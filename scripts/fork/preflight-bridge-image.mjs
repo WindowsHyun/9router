@@ -85,9 +85,18 @@ check("the display starts before the bridge that needs it",
 // The reason the VNC stack could go at all: the bridge is signed in over
 // HTTP, not by a human sitting at a remote desktop.
 check("the session agent verifies a session instead of serving a desktop",
-  /inspectBrowserLoginCapabilities/.test(stripJs(agent))
+  /detectChatGptAccountCapabilities/.test(stripJs(agent))
     && !/x11vnc|websockify|noVNC/i.test(stripJs(agent)),
   "session-agent must verify the pasted session with the bridge's own browser, and start no desktop");
+
+// Upstream's own verifier waits for a textbox whose accessible name is the
+// English "Chat with ChatGPT", which no non-English account has — a Korean one
+// is labelled "ChatGPT와 채팅", so a working session was reported as rejected.
+// The agent must use the locale-independent selector the bridge exports.
+check("the session agent does not depend on an English UI",
+  /CHATGPT_COMPOSER_SELECTOR/.test(stripJs(agent))
+    && !/Chat with ChatGPT/.test(stripJs(agent)),
+  "verification must locate the composer by selector, not by its English accessible name");
 
 check("no VNC tooling is installed at all",
   !/x11vnc|novnc|websockify/i.test(stripHash(dockerfile)),
