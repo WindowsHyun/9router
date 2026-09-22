@@ -1334,7 +1334,12 @@ export default function ProviderLimits() {
                     </span>
                     <p className="mt-1.5 text-xs text-text-muted">{error}</p>
                   </div>
-                ) : quota?.message ? (
+                ) : quota?.message && visibleQuotas.length === 0 ? (
+                  // Only *instead of* the table, never as well as it. A message
+                  // used to mean "there is no quota to show" — but a provider
+                  // that reports no upstream limit sends figures AND a message
+                  // saying whose numbers they are, and that combination hid the
+                  // figures completely and printed the message twice.
                   <div className="text-center py-5">
                     <p className="text-xs text-text-muted">{quota.message}</p>
                   </div>
@@ -1349,7 +1354,10 @@ export default function ProviderLimits() {
                     onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
                   />
                 )}
-                {quota?.message && !error && !isLoading && (
+                {/* The footnote under the table, so it only appears when a
+                    table was drawn — otherwise it repeats the message the
+                    empty state above is already showing. */}
+                {quota?.message && !error && !isLoading && visibleQuotas.length > 0 && (
                   <p className="mt-2 px-1 text-[10px] leading-relaxed text-text-muted">
                     {quota.message}
                   </p>
