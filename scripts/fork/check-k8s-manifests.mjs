@@ -151,6 +151,22 @@ check("the bridge profile is NOT on the router's PVC",
   })(),
   "the router chowns its data dir recursively at every start; that must not walk a browser profile");
 
+// A tag that is reused across different image contents must be pulled every
+// time. The bridge's tag is the *upstream bridge version*, so it stays v5.0.8
+// while the image behind it changes completely — with IfNotPresent, a node
+// that had pulled an older build keeps serving it and the deploy appears to do
+// nothing at all. A tag carrying a commit sha is content-specific and safe to
+// cache; `latest` already defaults to Always in Kubernetes.
+for (const c of containers) {
+  const tag = String(c.image || "").split(":").pop();
+  const contentSpecific = /-[0-9a-f]{7,}$/.test(tag) || String(c.image).includes("@sha256:");
+  if (contentSpecific || tag === "latest") continue;
+  check(`${c.name}: mutable tag "${tag}" is pulled every time`,
+    c.imagePullPolicy === "Always",
+    `imagePullPolicy=${c.imagePullPolicy || "(unset → IfNotPresent)"} — this tag gets reused for `
+    + "different image contents, so a cached copy would be served instead of what you just pushed");
+}
+
 const dshm = (deployment?.spec?.template?.spec?.volumes || []).find((v) => v.name === "chatgpt-web-dshm");
 check("/dev/shm is memory-backed and bounded well below the limit",
   dshm?.emptyDir?.medium === "Memory" && dshm?.emptyDir?.sizeLimit === "512Mi",
