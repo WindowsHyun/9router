@@ -10,6 +10,7 @@ import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { refreshAndUpdateCredentials } from "@/app/api/usage/[connectionId]/route.js";
 import { QUOTA_AUTOPING_CONFIG } from "@/shared/constants/config";
+import { cronFireKey, firstMatchingExpression } from "@/shared/services/cronMatcher";
 
 const C = QUOTA_AUTOPING_CONFIG;
 const CLAUDE_PING_URL = "https://api.anthropic.com/v1/messages?beta=true";
@@ -18,6 +19,9 @@ const providerHandlers = {
   claude: {
     getUsage: getClaudeUsage,
     sendPing: sendClaudePing,
+    // Ban-safe alternative: spawn the real Claude Code binary instead of
+    // replaying the OAuth token from this server. Opt in per schedule.
+    sendPingViaCli: sendClaudeCliPing,
   },
   codex: {
     getUsage: getCodexUsage,
@@ -120,6 +124,36 @@ async function sendClaudePing(connection, providerConfig, proxyOptions, deps) {
   return res.ok;
 }
 
+// Sends the keepalive through the local Claude Code binary (`claude -p`) so the
+// request carries a real CLI session instead of an OAuth token replayed by this
+// server. Returns false when the executor reports an error frame.
+async function sendClaudeCliPing(connection, providerConfig, proxyOptions, deps) {
+  const executor = deps.getExecutor("claude-cli");
+  // Bounded: the scheduler runs one tick at a time, so an unbounded drain here
+  // would stall every other provider's pings for as long as the child hangs.
+  const timeout = AbortSignal.timeout(C.cliPingTimeoutMs);
+  const { response } = await executor.execute({
+    model: providerConfig.cliPingModel,
+    body: { messages: [{ role: "user", content: providerConfig.pingText }] },
+    credentials: {},
+    signal: timeout,
+    log: console,
+  });
+  if (!response.ok) {
+    try { await response.body?.cancel?.(); } catch { /* noop */ }
+    return false;
+  }
+  // The CLI turn only completes once the stream drains; a mid-stream failure
+  // surfaces as an SSE error frame, so the body is inspected too.
+  try {
+    const body = await response.text();
+    return !body.includes("claude_cli_error");
+  } catch (e) {
+    console.warn(`[AutoPing] claude-cli ping drain failed: ${e.message}`);
+    return false;
+  }
+}
+
 function buildCodexPingInput(text) {
   return [{
     type: "message",
@@ -180,9 +214,90 @@ async function sendCodexPing(connection, providerConfig, proxyOptions, deps) {
   return true;
 }
 
-function shouldSkipAfterFailure(state, key, nowMs = Date.now()) {
+function shouldSkipAfterFailure(state, key, nowMs = Date.now(), cooldownMs = C.failureCooldownMs) {
   const failedAt = state.failureCache[key];
-  return failedAt && nowMs - failedAt < C.failureCooldownMs;
+  return failedAt && nowMs - failedAt < cooldownMs;
+}
+
+// -- Cron schedules ---------------------------------------------------------
+// settings[settingsKey].cron = { [connectionId]: { enabled, expressions[], timezone, text, via } }
+
+export function readCronEntry(entry) {
+  if (!entry || entry.enabled === false) return null;
+  const expressions = (Array.isArray(entry.expressions) ? entry.expressions : [])
+    .map((expression) => String(expression || "").trim())
+    .filter(Boolean)
+    .slice(0, C.cronMaxExpressions);
+  if (expressions.length === 0) return null;
+  return {
+    expressions,
+    timezone: entry.timezone || null,
+    text: String(entry.text || "").trim() || C.cronPingText,
+    via: entry.via === "cli" ? "cli" : "api",
+  };
+}
+
+function hasCronSchedules(providerSettings) {
+  return Object.values(providerSettings?.cron || {}).some((entry) => readCronEntry(entry) !== null);
+}
+
+export async function runCronPing(conn, provider, providerConfig, handler, cron, deps, state = g, now = new Date()) {
+  const expression = firstMatchingExpression(cron.expressions, now, cron.timezone);
+  if (!expression) return;
+
+  const fireKey = cronFireKey(expression, now, cron.timezone);
+  // Survives a restart inside the same minute - the key is persisted, not cached.
+  if (conn.lastCronFireKey === fireKey) return;
+
+  const key = `cron:${provider}:${conn.id}`;
+  if (shouldSkipAfterFailure(state, key, now.getTime(), C.cronFailureCooldownMs)) return;
+
+  const proxyCfg = await deps.resolveConnectionProxyConfig(conn.providerSpecificData);
+  const proxyOptions = buildProxyOptions(proxyCfg);
+
+  let connection = conn;
+  try {
+    const refreshed = await deps.refreshAndUpdateCredentials(connection, false, proxyOptions);
+    connection = refreshed.connection;
+  } catch (e) {
+    state.failureCache[key] = Date.now();
+    console.warn(`[AutoPing] cron ${provider}:${conn.id}: refresh failed: ${e.message}`);
+    return;
+  }
+
+  // A ping cannot reopen a window that is already spent - skip instead of
+  // burning a request, but only when usage positively says so.
+  try {
+    const usage = await handler.getUsage(connection.accessToken, proxyOptions);
+    const quota = usage?.quotas?.[providerConfig.quotaKey];
+    if (isQuotaExhausted(quota)) {
+      console.log(`[AutoPing] cron ${provider}:${connection.id}: skipped (quota exhausted)`);
+      return;
+    }
+  } catch (e) {
+    console.warn(`[AutoPing] cron ${provider}:${connection.id}: usage check failed, pinging anyway: ${e.message}`);
+  }
+
+  const pingConfig = { ...providerConfig, pingText: cron.text };
+  const useCli = cron.via === "cli" && typeof handler.sendPingViaCli === "function";
+  const ok = useCli
+    ? await handler.sendPingViaCli(connection, pingConfig, proxyOptions, deps)
+    : await handler.sendPing(connection, pingConfig, proxyOptions, deps);
+
+  if (!ok) {
+    state.failureCache[key] = Date.now();
+    console.warn(`[AutoPing] cron ${provider}:${connection.id}: ping failed (${expression})`);
+    return;
+  }
+
+  delete state.failureCache[key];
+  await deps.updateProviderConnection(connection.id, {
+    lastCronFireKey: fireKey,
+    lastCronPingAt: new Date().toISOString(),
+    lastPingAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  console.log(`[AutoPing] cron ${provider}:${connection.id}: ping sent via ${useCli ? "cli" : "api"} (${expression})`);
 }
 
 async function pingConnection(conn, provider, providerConfig, handler, deps, state = g) {
@@ -255,6 +370,8 @@ function createDefaultDeps() {
     refreshAndUpdateCredentials,
     proxyAwareFetch,
     getExecutor,
+    // Injectable so a tick can be driven without touching real quota endpoints.
+    providerHandlers,
   };
 }
 
@@ -265,17 +382,24 @@ export async function runQuotaAutoPingTick(deps = createDefaultDeps(), state = g
     const settings = await deps.getSettings();
 
     for (const [provider, providerConfig] of Object.entries(C.providers)) {
-      const handler = providerHandlers[provider];
+      const handler = (deps.providerHandlers || providerHandlers)[provider];
       if (!handler) continue;
 
-      const enabledMap = settings?.[providerConfig.settingsKey]?.connections || {};
-      if (Object.keys(enabledMap).length === 0) continue;
+      const providerSettings = settings?.[providerConfig.settingsKey] || {};
+      const enabledMap = providerSettings.connections || {};
+      const cronMap = providerSettings.cron || {};
+      if (Object.keys(enabledMap).length === 0 && !hasCronSchedules(providerSettings)) continue;
 
       const conns = await deps.getProviderConnections({ provider, isActive: true });
-      const targets = conns.filter((conn) => conn.authType === "oauth" && enabledMap[conn.id] === true);
-      for (const conn of targets) {
+      for (const conn of conns) {
+        if (conn.authType !== "oauth") continue;
+        const cron = readCronEntry(cronMap[conn.id]);
+        const resetPingEnabled = enabledMap[conn.id] === true;
+        if (!cron && !resetPingEnabled) continue;
+
         try {
-          await pingConnection(conn, provider, providerConfig, handler, deps, state);
+          if (cron) await runCronPing(conn, provider, providerConfig, handler, cron, deps, state);
+          if (resetPingEnabled) await pingConnection(conn, provider, providerConfig, handler, deps, state);
         } catch (e) {
           state.failureCache[cacheKey(provider, conn.id)] = Date.now();
           console.warn(`[AutoPing] ${provider}:${conn.id}: ${e.message}`);
@@ -305,9 +429,11 @@ export function stopQuotaAutoPing() {
 }
 
 export function configureQuotaAutoPing(settings) {
-  const enabled = Object.values(C.providers).some((providerConfig) =>
-    Object.values(settings?.[providerConfig.settingsKey]?.connections || {}).some(Boolean)
-  );
+  const enabled = Object.values(C.providers).some((providerConfig) => {
+    const providerSettings = settings?.[providerConfig.settingsKey];
+    return Object.values(providerSettings?.connections || {}).some(Boolean)
+      || hasCronSchedules(providerSettings);
+  });
   if (enabled) startQuotaAutoPing();
   else stopQuotaAutoPing();
 }

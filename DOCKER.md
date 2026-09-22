@@ -8,6 +8,24 @@ Run 9Router in a container. Published image: [`decolua/9router`](https://hub.doc
 
 ## Quick start
 
+`docker run` gives you the router on its own. **`docker compose up` gives you the
+router plus the two providers that need something installed locally** — Claude
+Code and the ChatGPT Web bridge — which is what most people want:
+
+```bash
+cp .env.example .env     # set JWT_SECRET; see the notes in that file
+docker compose up -d
+```
+
+> First run builds two images and takes several minutes: the router (so Claude
+> Code is inside it — the published image is upstream's and has no Claude Code)
+> and the bridge (Chromium, Electron and a virtual display). Give Docker at
+> least 4 GB of memory for the router's Next.js build.
+
+Open http://localhost:20128.
+
+Router only, no local providers:
+
 ```bash
 docker run -d \
   -p 20128:20128 \
@@ -18,6 +36,103 @@ docker run -d \
 ```
 
 App listens on port `20128`. Open: http://localhost:20128
+
+---
+
+## Reaching the provider cards remotely
+
+The Claude Code and ChatGPT Web cards drive routes that are normally
+restricted to loopback, because on a desktop they can spawn a process or open
+a window. In a container that restriction only gets in the way — there is no
+desktop behind them — so it is lifted automatically when 9Router detects
+`/.dockerenv` or `KUBERNETES_SERVICE_HOST`. Dashboard authentication still
+applies.
+
+If you run 9Router outside a container but reach the dashboard from another
+machine, set it explicitly:
+
+```yaml
+    environment:
+      NINEROUTER_HOST_ROUTES_REMOTE: "1"
+```
+
+`0` forces the loopback rule back on.
+
+---
+
+## The two local providers
+
+### Claude Code CLI — bundled in the image
+
+`@anthropic-ai/claude-code` is installed in the image, so the **claude-cli**
+provider works with nothing else to install. It runs `claude -p` instead of
+replaying OAuth tokens, which is the point: traffic looks like an ordinary
+Claude Code session.
+
+The container has no terminal for the sign-in TUI, so an account is attached
+with a token instead. On any machine that already has Claude Code:
+
+```bash
+claude setup-token          # prints a long-lived token
+```
+
+Then in the dashboard: **Providers → Claude Code CLI (-p) → Claude Code
+accounts → paste the token**. Add several tokens for several accounts;
+9Router falls back between them like any other provider.
+
+> Each account is one token (in a container) or one Claude Code config
+> directory (on a desktop). Both are per-connection, so accounts never share
+> credentials.
+
+### ChatGPT Web — a sidecar container
+
+The bridge drives a real chatgpt.com session in a browser, on a bare virtual
+display — **no Electron launcher, no desktop, no VNC**. You sign it in from
+the 9Router dashboard by handing it your chatgpt.com session; nothing inside
+the container is ever something you connect to.
+
+(Fully headless is available as `BRIDGE_HEADLESS=1`, but it is not the
+default: upstream never runs that mode, so chatgpt.com's bot detection and the
+bridge's own automation are both untested on it.)
+
+```bash
+docker compose up -d        # builds the bridge image on first run (a few minutes)
+```
+
+Then, **once**:
+
+1. In a browser where you are signed in to chatgpt.com, open devtools →
+   Application → Cookies → `https://chatgpt.com`, and copy the value of
+   `__Secure-next-auth.session-token`. It is httpOnly, so `document.cookie`
+   will not show it; a cookie-extension export works too.
+2. Dashboard → **ChatGPT Web** → paste it → **Connect**.
+
+The bridge writes the session and then opens your account in its own browser
+to check it, so "Signed in" means ChatGPT actually accepted it. The session is
+kept in the `9router-chatgpt-web-profile` volume.
+
+9Router reaches the bridge at `http://chatgpt-web:17851` over the compose
+network — 17851, not 17841, because the bridge pins its own listen address to
+`127.0.0.1` and a sibling container cannot reach that; `BRIDGE_PUBLISH_PORT`
+forwards it. (In Kubernetes the bridge is a sidecar sharing the router's
+network namespace, so there it is plain `http://127.0.0.1:17841` with no
+forwarder.) The session endpoint on `17842` binds the interface itself and
+needs no forwarding.
+
+Neither port is published to your machine. There is nothing to open: signing
+in happens in the dashboard.
+
+**Already running the desktop launcher on your host?** Skip the sidecar and
+point the router at it instead:
+
+```yaml
+    environment:
+      CHATGPT_WEB_BASE_URL: http://host.docker.internal:17841
+```
+
+9Router accepts any loopback, container or private-network address for the
+bridge and refuses public ones, so the session cannot leave your network.
+
 
 ## Manage container
 
