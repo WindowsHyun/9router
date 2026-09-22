@@ -5,9 +5,10 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
+import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal, AutoPingScheduleModal, ChatGptWebBridgeCard, ClaudeCliStatusCard, ClaudeCliAccountsCard } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
+import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
@@ -26,10 +27,6 @@ import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
-const AUTO_PING_SETTINGS_KEYS = {
-  claude: "claudeAutoPing",
-  codex: "codexAutoPing",
-};
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,7 +65,8 @@ export default function ProviderDetailPage() {
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
-  const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
+  const [autoPing, setAutoPing] = useState({ enabled: false, connections: {}, cron: {} });
+  const [cronScheduleTarget, setCronScheduleTarget] = useState(null);
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [liveModels, setLiveModels] = useState([]);
   // Live-catalog fetch warning/error (surfaced for zed only; cursor behavior unchanged).
@@ -329,7 +327,7 @@ export default function ProviderDetailPage() {
       setThinkingMode(thinkingCfg.mode || "auto");
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? settingsData[autoPingSettingsKey] || {} : {};
-      setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
+      setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {}, cron: apCfg.cron || {} });
       if (nodesRes.ok) {
         let node = (nodesData.nodes || []).find((entry) => entry.id === providerId) || null;
 
@@ -460,6 +458,14 @@ export default function ProviderDetailPage() {
 
   const handleAutoPingConnection = (connectionId, on) => {
     saveAutoPing({ ...autoPing, connections: { ...autoPing.connections, [connectionId]: on } });
+  };
+
+  // `null` entry removes the schedule; anything else replaces it wholesale.
+  const handleAutoPingSchedule = async (connectionId, entry) => {
+    const nextCron = { ...(autoPing.cron || {}) };
+    if (entry) nextCron[connectionId] = entry;
+    else delete nextCron[connectionId];
+    await saveAutoPing({ ...autoPing, cron: nextCron });
   };
 
   useEffect(() => {
@@ -1038,6 +1044,12 @@ export default function ProviderDetailPage() {
                 onMoveUp={() => handleSwapPriority(index, index - 1)}
                 onMoveDown={() => handleSwapPriority(index, index + 1)}
                 onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
+                autoPingSchedule={AUTO_PING_SETTINGS_KEYS[providerId] && conn.authType === "oauth" ? {
+                  active: (autoPing.cron?.[conn.id]?.expressions || []).length > 0
+                    && autoPing.cron[conn.id].enabled !== false,
+                  summary: (autoPing.cron?.[conn.id]?.expressions || []).join(", "),
+                  onOpen: () => setCronScheduleTarget(conn),
+                } : null}
                 autoPing={AUTO_PING_SETTINGS_KEYS[providerId] && conn.authType === "oauth" ? {
                   on: autoPing.connections[conn.id] === true,
                   onToggle: (on) => handleAutoPingConnection(conn.id, on),
@@ -1507,7 +1519,13 @@ export default function ProviderDetailPage() {
 
       {/* Connections */}
       {isFreeNoAuth ? (
-        <NoAuthProxyCard providerId={providerId} />
+        <>
+          {providerId === "chatgpt-web" && <ChatGptWebBridgeCard />}
+          {/* Accounts first: it is the card that decides whether anything works. */}
+          {providerId === "claude-cli" && <ClaudeCliAccountsCard />}
+          {providerId === "claude-cli" && <ClaudeCliStatusCard />}
+          <NoAuthProxyCard providerId={providerId} />
+        </>
       ) : (
         <Card>
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1850,6 +1868,15 @@ export default function ProviderDetailPage() {
           onClose={() => setShowOAuthModal(false)}
         />
       )}
+
+      <AutoPingScheduleModal
+        isOpen={!!cronScheduleTarget}
+        provider={providerId}
+        connection={cronScheduleTarget || {}}
+        value={cronScheduleTarget ? autoPing.cron?.[cronScheduleTarget.id] : null}
+        onSave={(entry) => handleAutoPingSchedule(cronScheduleTarget.id, entry)}
+        onClose={() => setCronScheduleTarget(null)}
+      />
 
       {/* Xiaomi Desktop: auto-import local credentials modal */}
       <XiaomiMimoAuthModal

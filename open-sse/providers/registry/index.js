@@ -125,6 +125,8 @@ import p119 from "./selfhosted-embedding.js";
 import p120 from "./fish-audio.js";
 import p121 from "./alitp-intl.js";
 import p122 from "./xquik.js";
+import p126 from "./claude-cli.js";
+import p125 from "./chatgpt-web.js";
 export default [
   p0,
   p1,
@@ -250,4 +252,6 @@ export default [
   p120,
   p121,
   p122,
+  p126,
+  p125,
 ];
