@@ -9,10 +9,9 @@ What the fork adds — in full in [FORK-CHANGELOG.md](FORK-CHANGELOG.md):
 | | |
 |---|---|
 | `claude-cli` (`ccli`) | Routes through the local `claude -p` binary instead of replaying an OAuth token, which is what makes the plain `claude` provider a ban risk |
-| `chatgpt-web` (`cgw`) | Uses a signed-in chatgpt.com session through the [codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web) bridge |
 | Auto-ping cron | Scheduled keepalive pings ("Only Hi") on a cron, per connection, optionally sent via the Claude Code CLI |
 | Agent skills | Install a third-party `SKILL.md` by URL and toggle it per request; injected into the routed prompt |
-| Docker packaging | The router image bundles Claude Code, and `docker/chatgpt-web/` builds the bridge, so one install covers all of it |
+| Docker packaging | The router image bundles Claude Code, so one install covers it |
 | Bridge sign-in console | The router serves the bridge's noVNC window on its own origin behind the dashboard session, so signing in needs no `kubectl port-forward` |
 
 **The short version**
@@ -74,7 +73,7 @@ git fetch upstream --tags
 
 # 2. commit the work
 git add -A ':!.omc'
-git commit -m "feat: claude-cli, chatgpt-web providers and cron auto-ping"
+git commit -m "feat: claude-cli provider and cron auto-ping"
 
 # 3. prove it
 node scripts/fork/verify-fork.mjs
@@ -141,8 +140,8 @@ fork almost never replaces upstream code — the one exception is called out.
 
 | File | What the fork put there | On conflict |
 |---|---|---|
-| `open-sse/providers/registry/index.js` | 2 imports + 2 entries in the default-export array | Despite the `Auto-generated` header **there is no generator** — it is hand-maintained. Take upstream's list, then re-add `./claude-cli.js` and `./chatgpt-web.js` with free `pN` indices and append them to the array. |
-| `open-sse/executors/index.js` | 2 imports + 4 map entries (`claude-cli`, `chatgpt-web`, `ccli`, `cgw`) | Keep all of them next to upstream's. |
+| `open-sse/providers/registry/index.js` | 1 import + 1 entry in the default-export array | Despite the `Auto-generated` header **there is no generator** — it is hand-maintained. Take upstream's list, then re-add `./claude-cli.js` with a free `pN` index and append it to the array. A collision here is silent at merge time and fatal at boot: two `pN` imports with the same name stop the whole registry loading. |
+| `open-sse/executors/index.js` | 1 import + 2 map entries (`claude-cli`, `ccli`) | Keep both next to upstream's. |
 | `open-sse/handlers/chatCore/sseToJsonHandler.js` | **Replaces** the final `const finalBody = …` ternary with an if/else that also converts for non-OpenAI clients | The one real replacement. Keep the fork's block; upstream's ternary is what it supersedes. This is a genuine upstream bug fix — see *Sending things upstream* below. |
 | `src/shared/services/quotaAutoPing.js` | The whole cron layer: `cronMatcher` import, `sendClaudeCliPing`, `sendPingViaCli` on the claude handler, `readCronEntry`/`runCronPing`, the cron branch in the tick, `deps.providerHandlers` | Largest edit, but purely additive. Keep upstream's changes to the reset-based path and re-add the cron pieces around them. |
 | `src/shared/constants/config.js` | `cronPingText`, `cronMaxExpressions`, `cronFailureCooldownMs`, `cliPingTimeoutMs`, `cliPingModel` inside `QUOTA_AUTOPING_CONFIG` | Additive keys. Keep both sides. |
@@ -188,7 +187,7 @@ node scripts/fork/verify-fork.mjs --live    # also the live `claude -p` tests
 
 It checks, in order: every added file is present; every integration marker is still in its upstream
 file (and no conflict markers are left behind); the built registry really exposes `claude-cli` and
-`chatgpt-web` with the expected transport and models; the fork's five test files pass; the
+the fork's five test files pass; the
 baselines list both providers.
 
 File presence alone would pass on a half-resolved merge — that is why the registry and test steps
@@ -241,7 +240,6 @@ Run automatically by `upgrade-fork.mjs`; here they are for a manual upgrade:
 node tests/__baseline__/snapshot-providers.mjs           # providers-baseline.json
 node tests/__baseline__/verify-alias.mjs --snapshot      # alias-baseline.json
 cp public/providers/claude.png public/providers/claude-cli.png
-cp public/providers/codex.png  public/providers/chatgpt-web.png
 ```
 
 The baselines are snapshots of "every provider the app knows". Upstream adds providers in most
@@ -255,7 +253,6 @@ releases, so merging them is meaningless — rebuild and commit.
 |---|---|---|
 | `CLI_CLAUDE_BIN` | auto-detected | Path to the `claude` binary |
 | `CLI_CLAUDE_MAX_CONCURRENCY` | `4` | Concurrent `claude -p` processes; each is ~230 MB |
-| `CHATGPT_WEB_BASE_URL` | `http://127.0.0.1:17841` | codex-chatgpt-web bridge endpoint (loopback only) |
 
 ---
 

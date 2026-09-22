@@ -28,7 +28,6 @@ import WindsurfExecutor from "./windsurf.js";
 import { DefaultExecutor } from "./default.js";
 import { DevinCliExecutor } from "./devin-cli.js";
 import { ClaudeCliExecutor } from "./claude-cli.js";
-import { ChatGptWebExecutor } from "./chatgpt-web.js";
 
 const executors = {
   antigravity: new AntigravityExecutor(),
@@ -49,8 +48,6 @@ const executors = {
   "opencode-go": new OpenCodeGoExecutor(),
   "opencode-zen": new OpenCodeZenExecutor(),
   "claude-cli": new ClaudeCliExecutor(),
-  "chatgpt-web": new ChatGptWebExecutor(),
-  cgw: new ChatGptWebExecutor(), // Alias
   ccli: new ClaudeCliExecutor(), // Alias
   "grok-web": new GrokWebExecutor(),
   "grok-cli": new GrokCliExecutor(),

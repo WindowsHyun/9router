@@ -8,8 +8,8 @@ import { FREE_TIER_PROVIDERS, APIKEY_PROVIDERS } from "@/shared/constants/provid
  * connection list down to the authTypes this returns. The regression it exists
  * for: every `authModes: ["none"]` provider stores its connections with
  * authType "none", and the old logic collapsed anything without an apikey mode
- * to "oauth" alone — so claude-cli, chatgpt-web and devin-cli each reported
- * "No connections" while holding working accounts.
+ * to "oauth" alone — so claude-cli reported "No connections" while holding
+ * working accounts.
  */
 describe("providerAuthTypes", () => {
   it("counts authType none for a provider that declares only that mode", () => {
@@ -81,7 +81,7 @@ describe("providerAuthTypes", () => {
 
   // Named explicitly: these are the shipped providers the regression hid.
   it("counts the no-auth providers that were reading No connections", () => {
-    for (const id of ["claude-cli", "chatgpt-web"]) {
+    for (const id of ["claude-cli"]) {
       const info = PROVIDER_REGISTRY.find((entry) => entry.id === id);
       expect(info, `${id} missing from the registry`).toBeTruthy();
       expect(providerAuthTypes(info, id)).toContain(info.authType);

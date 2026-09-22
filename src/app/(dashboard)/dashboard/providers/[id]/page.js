@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal, AutoPingScheduleModal, ChatGptWebBridgeCard, ClaudeCliStatusCard, ClaudeCliAccountsCard } from "@/shared/components";
+import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal, AutoPingScheduleModal, ClaudeCliStatusCard, ClaudeCliAccountsCard } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
@@ -1520,7 +1520,6 @@ export default function ProviderDetailPage() {
       {/* Connections */}
       {isFreeNoAuth ? (
         <>
-          {providerId === "chatgpt-web" && <ChatGptWebBridgeCard />}
           {/* Accounts first: it is the card that decides whether anything works. */}
           {providerId === "claude-cli" && <ClaudeCliAccountsCard />}
           {providerId === "claude-cli" && <ClaudeCliStatusCard />}

@@ -27,13 +27,6 @@ export const ADDED_FILES = [
   "open-sse/providers/registry/claude-cli.js",
   "src/app/api/cli-tools/claude-cli-settings/route.js",
   "src/shared/components/ClaudeCliStatusCard.js",
-  // chatgpt-web provider
-  "open-sse/config/chatgptWeb.js",
-  "open-sse/executors/chatgpt-web.js",
-  "open-sse/providers/registry/chatgpt-web.js",
-  "src/app/api/cli-tools/chatgpt-web-settings/route.js",
-  "src/app/api/cli-tools/chatgpt-web-session/route.js",
-  "src/shared/components/ChatGptWebBridgeCard.js",
   // cron auto-ping
   "src/shared/services/cronMatcher.js",
   "src/shared/components/AutoPingScheduleModal.js",
@@ -50,24 +43,12 @@ export const ADDED_FILES = [
   // local-provider accounts and their Docker packaging
   "src/app/api/cli-tools/claude-cli-accounts/route.js",
   "src/shared/components/ClaudeCliAccountsCard.js",
-  "docker/chatgpt-web/Dockerfile",
-  "docker/chatgpt-web/entrypoint.sh",
-  // headless bridge: config bootstrap, on-demand sign-in console, loopback
-  // forwarder for compose, and the build-time browser check
-  "docker/chatgpt-web/bootstrap-config.ts",
-  "docker/chatgpt-web/session-agent.mjs",
-  "docker/chatgpt-web/tcp-forward.mjs",
-  // router entrypoint: chowns mounted volumes but skips the browser profile
-  "docker/router-entrypoint.sh",
-  "docker/chatgpt-web/smoke/browser-check.mjs",
   // tests — their absence means the fork is present but unproven
   "tests/unit/claude-cli-executor.test.js",
-  "tests/unit/chatgpt-web-executor.test.js",
   "tests/unit/concurrency-gate.test.js",
   "tests/unit/quota-autoping-cron.test.js",
   "tests/unit/forced-sse-client-format.test.js",
   "tests/unit/agent-skills.test.js",
-  "tests/unit/chatgpt-web-session.test.js",
   "tests/real/claude-cli.real.test.js",
   // docs + tooling
   "AGENT-HANDOFF.md",
@@ -81,10 +62,6 @@ export const ADDED_FILES = [
   "scripts/fork/check-container-guard.mjs",
   // drives the Claude Code accounts route on a real server
   "scripts/fork/check-claude-accounts.mjs",
-  // drives the ChatGPT Web session route against a stubbed bridge
-  "scripts/fork/check-chatgpt-session.mjs",
-  // static preflight on the bridge image, before spending a build on it
-  "scripts/fork/preflight-bridge-image.mjs",
   // validates a Kubernetes bundle against the traps in AGENT-HANDOFF.md
   "scripts/fork/check-k8s-manifests.mjs",
 ];
@@ -92,7 +69,6 @@ export const ADDED_FILES = [
 /** Artwork the fork reuses from upstream files; regenerated rather than carried. */
 export const DERIVED_ASSETS = [
   { from: "public/providers/claude.png", to: "public/providers/claude-cli.png" },
-  { from: "public/providers/codex.png", to: "public/providers/chatgpt-web.png" },
 ];
 
 /**
@@ -104,13 +80,12 @@ export const DERIVED_ASSETS = [
 export const PATCHED_FILES = [
   {
     path: "open-sse/executors/index.js",
-    markers: ["ClaudeCliExecutor", "ChatGptWebExecutor", '"claude-cli":', '"chatgpt-web":'],
-    hint: "Keep both fork imports and all four executor-map entries (claude-cli, chatgpt-web, and the ccli/cgw aliases) alongside whatever upstream added.",
+    markers: ["ClaudeCliExecutor", '"claude-cli":'],
   },
   {
     path: "open-sse/providers/registry/index.js",
-    markers: ["./claude-cli.js", "./chatgpt-web.js"],
-    hint: "Despite the 'Auto-generated' header there is no generator script — this file is hand-maintained. On conflict take upstream's list, then re-add the two fork imports and their entries in the default-export array (use free pN indices).",
+    markers: ["./claude-cli.js"],
+    hint: "Despite the 'Auto-generated' header there is no generator script — this file is hand-maintained. On conflict take upstream's list, then re-add the fork import and its entry in the default-export array (use a free pN index — a duplicate pN is silent at merge time and stops the registry loading at boot).",
   },
   {
     path: "open-sse/handlers/chatCore/sseToJsonHandler.js",
@@ -134,38 +109,32 @@ export const PATCHED_FILES = [
   },
   {
     path: "src/dashboardGuard.js",
-    markers: ["/api/cli-tools/claude-cli-settings", "/api/cli-tools/chatgpt-web-settings"],
+    markers: ["/api/cli-tools/claude-cli-settings"],
     hint: "Both entries belong in LOCAL_ONLY_PATHS — one spawns a process, the other fetches a URL and can open a window on the host. Dropping them exposes those routes when requireLogin is false.",
   },
   {
     path: "src/app/api/cli-tools/all-statuses/route.js",
-    markers: ["claudeCliGet", "chatgptWebGet"],
+    markers: ["claudeCliGet"],
     hint: "Two imports and two STATUS_GETTERS entries.",
   },
   {
     path: "src/shared/constants/cliTools.js",
-    markers: ['"claude-cli":', '"chatgpt-web":'],
+    markers: ['"claude-cli":'],
     hint: "Two CLI_TOOLS entries inserted before the `devin:` entry.",
   },
   {
     path: "src/shared/components/index.js",
-    markers: ["AutoPingScheduleModal", "ChatGptWebBridgeCard", "ClaudeCliStatusCard", "AgentSkillsCard", "ClaudeCliAccountsCard"],
+    markers: ["AutoPingScheduleModal", "ClaudeCliStatusCard", "AgentSkillsCard", "ClaudeCliAccountsCard"],
     hint: "Five re-exports.",
   },
   {
     path: "src/sse/services/auth.js",
     markers: ["noAuthRows"],
-    hint: "A noAuth provider must use its real connection rows when it has any. Upstream returns a single synthetic Public connection and never looks, which is why multi-account and per-account fallback did not work for claude-cli or chatgpt-web.",
   },
   {
     path: "src/dashboardGuard.js",
     markers: ["IS_CONTAINER", "NINEROUTER_HOST_ROUTES_REMOTE"],
     hint: "LOCAL_ONLY_PATHS requires a loopback request, which no container deployment can satisfy - both provider cards showed only \"Local only: CLI token required\". The gate is container-aware: authentication alone when containerised, the desktop rule everywhere else. Do not drop this or the Docker/K8s deployment loses those routes entirely.",
-  },
-  {
-    path: "src/app/api/cli-tools/chatgpt-web-settings/route.js",
-    markers: ["resolveChatGptWebBaseUrl"],
-    hint: "The status probe must default to the same address routed traffic uses. assertBridgeBaseUrl alone resolves an empty value to 127.0.0.1, so with the bridge as a sibling container this reported \"Bridge offline\" while routing worked.",
   },
   {
     path: "src/shared/constants/providers.js",
@@ -178,29 +147,24 @@ export const PATCHED_FILES = [
     hint: "Upstream shows a green Ready badge for every noAuth provider. noAuth means no API key, not usable - a provider that needs a signed-in CLI or a running bridge must fall through to the real connection count.",
   },
   {
-    path: "open-sse/config/chatgptWeb.js",
-    markers: ["isPrivateNetworkHost"],
-    hint: "The bridge URL was loopback-only, which made the supported Docker layout (bridge as a sibling container) impossible. It now accepts loopback, container names and private ranges, and still refuses public hosts and link-local 169.254 (cloud metadata).",
-  },
-  {
     path: "custom-server.js",
     markers: ['server.on("upgrade"'],
     hint: "The server.on(\"upgrade\") registration is load-bearing: Node only emits that event when a listener exists, so without it the h2c downgrade in the emit override never runs.",
   },
   {
     path: "Dockerfile",
-    markers: ["claude-code", "CLI_CLAUDE_BIN", "router-entrypoint.sh"],
+    markers: ["claude-code", "CLI_CLAUDE_BIN"],
     hint: "Bundles a pinned @anthropic-ai/claude-code so the claude-cli provider works in the image with nothing else installed, and sets CLI_CLAUDE_BIN and CLAUDE_CONFIG_DIR. (The apk/npm mirror build args are NOT on this branch - they were part of the security work that was dropped.)",
   },
   {
     path: "docker-compose.yml",
-    markers: ["chatgpt-web", "CHATGPT_WEB_BASE_URL"],
-    hint: "Adds the ChatGPT Web bridge sidecar and points 9Router at it over the compose network. Keep port 6080 bound to 127.0.0.1 - it exposes a signed-in ChatGPT session.",
+    markers: ["9router"],
+    hint: "Runs 9Router with the Claude Code CLI available inside the container.",
   },
   {
     path: "DOCKER.md",
-    markers: ["claude setup-token", "__Secure-next-auth.session-token"],
-    hint: "Documents how each local provider is signed in: a setup token for Claude Code, a pasted chatgpt.com session for the bridge.",
+    markers: ["claude setup-token"],
+    hint: "Documents how the Claude Code CLI provider is signed in, with a setup token.",
   },
   {
     path: "src/lib/db/schema.js",
@@ -251,7 +215,6 @@ export const PATCHED_FILES = [
     path: "src/app/(dashboard)/dashboard/providers/[id]/page.js",
     markers: [
       "AutoPingScheduleModal",
-      "ChatGptWebBridgeCard",
       "ClaudeCliStatusCard",
       "cronScheduleTarget",
       "handleAutoPingSchedule",
@@ -272,15 +235,12 @@ export const REGENERATED_BASELINES = [
 /** Provider ids the fork registers; asserted against the built registry. */
 export const FORK_PROVIDERS = [
   { id: "claude-cli", alias: "ccli", format: "openai", forceStream: true },
-  { id: "chatgpt-web", alias: "cgw", format: "openai-responses", forceStream: true },
 ];
 
 /** Fork test files, run from `tests/`. */
 export const FORK_TESTS = [
   "unit/agent-skills.test.js",
   "unit/claude-cli-executor.test.js",
-  "unit/chatgpt-web-executor.test.js",
-  "unit/chatgpt-web-session.test.js",
   "unit/concurrency-gate.test.js",
   "unit/quota-autoping-cron.test.js",
   "unit/forced-sse-client-format.test.js",

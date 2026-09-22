@@ -1,11 +1,10 @@
 /**
  * Usage figures for providers that report no quota of their own.
  *
- * Claude Code CLI and ChatGPT Web both bill against a subscription this server
- * cannot query. `claude -p --output-format json` returns the cost and tokens of
- * *that call* (usage.input_tokens, output_tokens, total_cost_usd) but no window
- * remaining and no reset time; the ChatGPT Web bridge exposes no usage endpoint
- * at all, and its executor sees no rate-limit headers.
+ * Claude Code CLI bills against a subscription this server cannot query.
+ * `claude -p --output-format json` returns the cost and tokens of *that call*
+ * (usage.input_tokens, output_tokens, total_cost_usd) but no window remaining
+ * and no reset time.
  *
  * So there is nothing upstream to show a percentage of. What this server does
  * know is what it routed itself, which is already recorded per connection in

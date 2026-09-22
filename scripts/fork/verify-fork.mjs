@@ -139,7 +139,7 @@ if (!existsSync(baseline)) {
   if (absent.length) {
     notes.push(`baseline does not list ${absent.join(", ")} — regenerate it after an upgrade: `
       + "node tests/__baseline__/snapshot-providers.mjs && node tests/__baseline__/verify-alias.mjs --snapshot");
-  } else ok("providers-baseline.json lists both fork providers");
+  } else ok(`providers-baseline.json lists ${FORK_PROVIDERS.map((p) => p.id).join(", ")}`);
 }
 
 // ── report ──────────────────────────────────────────────────────────────────

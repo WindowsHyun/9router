@@ -12,11 +12,10 @@ const { getRoutedUsage } = await import("@/shared/services/routedUsage");
 beforeEach(() => { rows.length = 0; });
 
 /**
- * These two providers bill against a subscription this server cannot query:
+ * claude-cli bills against a subscription this server cannot query:
  * `claude -p --output-format json` reports the cost of the call it just made
- * but no window remaining and no reset, and the ChatGPT Web bridge exposes no
- * usage endpoint at all. So the figures are 9Router's own, and the contract
- * that matters is that they never masquerade as a subscription limit.
+ * but no window remaining and no reset. So the figures are 9Router's own, and
+ * the contract that matters is that they never masquerade as a limit.
  */
 describe("routed usage", () => {
   it("counts the requests it routed for that connection", async () => {
@@ -31,7 +30,7 @@ describe("routed usage", () => {
 
   it("never presents a figure as a quota with a limit", async () => {
     rows.push({ cost: 0, tokens: "{}", status: "success" });
-    const usage = await getRoutedUsage({ id: "c1", provider: "chatgpt-web" });
+    const usage = await getRoutedUsage({ id: "c1", provider: "claude-cli" });
     for (const [name, quota] of Object.entries(usage.quotas)) {
       expect(quota.unlimited, `${name} must not draw a progress bar`).toBe(true);
       expect(quota.remainingPercentage, `${name} must not claim a remaining %`).toBeNull();
@@ -68,7 +67,7 @@ describe("routed usage", () => {
 
 describe("routed-usage provider registration", () => {
   it("covers exactly the providers whose credentials this server does not hold", () => {
-    expect([...USAGE_ROUTED_PROVIDERS].sort()).toEqual(["chatgpt-web", "claude-cli"]);
+    expect([...USAGE_ROUTED_PROVIDERS].sort()).toEqual(["claude-cli"]);
   });
 
   // The quota tracker's eligibility test is USAGE_SUPPORTED_PROVIDERS first, so
@@ -80,7 +79,7 @@ describe("routed-usage provider registration", () => {
   });
 
   it("marks them in the registry rather than in a hand-kept list", () => {
-    for (const id of ["claude-cli", "chatgpt-web"]) {
+    for (const id of ["claude-cli"]) {
       const entry = PROVIDER_REGISTRY.find((r) => r.id === id);
       expect(entry?.features?.usageRouted, `${id} features.usageRouted`).toBe(true);
     }
@@ -126,28 +125,3 @@ describe("routed figures survive the dashboard's own parser", () => {
   });
 });
 
-/**
- * Zero Risk is a *mode* in upstream's README ("paste and send manually"), not a
- * model: a human copies each prompt into chatgpt.com by hand. It can never
- * serve a routed API call, least of all in a headless container, but it was
- * listed here as two selectable models that could only fail.
- */
-describe("chatgpt-web model list", () => {
-  const entry = PROVIDER_REGISTRY.find((r) => r.id === "chatgpt-web");
-
-  it("offers no zero-risk model", () => {
-    const ids = (entry?.models || []).map((m) => m.id);
-    expect(ids.filter((id) => id.includes("zero-risk"))).toEqual([]);
-  });
-
-  it("keeps the modes the bridge actually drives", () => {
-    const ids = (entry?.models || []).map((m) => m.id);
-    for (const id of [
-      "chatgpt-web-light", "chatgpt-web-medium", "chatgpt-web-high",
-      "chatgpt-web-extra-high", "chatgpt-web-pro", "chatgpt-web-luna", "chatgpt-web-think",
-    ]) {
-      expect(ids).toContain(id);
-    }
-    expect(ids).toHaveLength(7);
-  });
-});

@@ -78,9 +78,7 @@ const LOCAL_ONLY_PATHS = [
   // Creates config directories and opens a terminal window on the host.
   "/api/cli-tools/claude-cli-accounts",
   // Fetches a caller-supplied URL and can open a window on the host.
-  "/api/cli-tools/chatgpt-web-settings",
   // Carries a chatgpt.com session through to the bridge.
-  "/api/cli-tools/chatgpt-web-session",
   "/api/mcp/",
   "/api/tunnel/tailscale-install",
   "/api/tunnel/tailscale-enable",

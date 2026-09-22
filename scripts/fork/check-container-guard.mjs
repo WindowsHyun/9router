@@ -40,7 +40,6 @@ const PASSWORD = "container-guard-test-password";
 
 // Both cards, both gated.
 const ROUTES = [
-  ["ChatGPT Web card", "/api/cli-tools/chatgpt-web-settings"],
   ["Claude Code card", "/api/cli-tools/claude-cli-accounts"],
 ];
 

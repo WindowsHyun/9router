@@ -22,16 +22,6 @@ services:
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
       HEADROOM_URL: http://headroom:8787
-      # The bridge is a sibling container, not loopback. 9Router accepts any
-      # private/container address for it and still refuses public ones, so the
-      # ChatGPT session can never be sent off this network.
-      #
-      # 17851, not 17841: the bridge pins its own listen host to 127.0.0.1, so
-      # a sibling container cannot reach it directly. BRIDGE_PUBLISH_PORT below
-      # forwards this port to it. In Kubernetes the bridge is a sidecar sharing
-      # the network namespace, so there it is plain http://127.0.0.1:17841 and
-      # no forwarder is needed.
-      CHATGPT_WEB_BASE_URL: http://chatgpt-web:17851
     depends_on:
       - headroom
 
@@ -42,47 +32,6 @@ services:
     ports:
       - "8787:8787"
 
-  # ChatGPT Web bridge. It drives a real chatgpt.com session in a browser, on a
-  # bare virtual display — no Electron launcher, no desktop, no VNC in steady
-  # state. (BRIDGE_HEADLESS=1 drops the display too; not the default, because
-  # upstream never runs headless.)
-  #
-  # Signing in is the one thing that needs a visible browser, so the container
-  # can start a temporary X server and console on demand: press Login in the
-  # dashboard, sign in, close the browser window, and the console shuts itself
-  # down again. Nothing is resident for it.
-  #
-  # It is a build, not a pulled image, because upstream publishes desktop
-  # installers rather than a container.
-  chatgpt-web:
-    build:
-      context: ./docker/chatgpt-web
-      args:
-        # Pinned so a rebuild cannot change what routed requests run on.
-        BRIDGE_VERSION: v5.0.8
-        # Korea: mirror.kakao.com or ftp.lanet.kr. Default is the official.
-        APT_MIRROR_HOST: deb.debian.org
-    container_name: 9router-chatgpt-web
-    restart: always
-    environment:
-      # Publish the bridge's loopback port for the router, on a second port —
-      # 0.0.0.0:17841 would collide with the bridge's own 127.0.0.1:17841 bind.
-      # The session endpoint (17842) already binds the interface, so it needs
-      # no forwarding.
-      BRIDGE_PUBLISH_PORT: "17851"
-    # No published ports: signing in happens in the 9Router dashboard, not at a
-    # console in here, so there is nothing to connect to.
-    volumes:
-      - chatgpt-web-profile:/data/profile
-    # Chromium needs more than the default 64 MB of shared memory or tabs crash.
-    shm_size: "1gb"
-    # Only 9router needs these, over the compose network.
-    expose:
-      - "17851"
-      - "17842"
-
 volumes:
   9router-data:
     name: 9router-data
-  chatgpt-web-profile:
-    name: 9router-chatgpt-web-profile
