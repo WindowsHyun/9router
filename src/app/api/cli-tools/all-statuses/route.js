@@ -20,6 +20,8 @@ import { GET as crushGet } from "../crush-settings/route";
 import { GET as forgeGet } from "../forge-settings/route";
 import { GET as smeltGet } from "../smelt-settings/route";
 import { GET as codewhaleGet } from "../codewhale-settings/route";
+import { GET as claudeCliGet } from "../claude-cli-settings/route";
+import { GET as chatgptWebGet } from "../chatgpt-web-settings/route";
 
 const STATUS_GETTERS = {
   claude: claudeGet,
@@ -41,6 +43,8 @@ const STATUS_GETTERS = {
   forge: forgeGet,
   smelt: smeltGet,
   codewhale: codewhaleGet,
+  "claude-cli": claudeCliGet,
+  "chatgpt-web": chatgptWebGet,
 };
 
 // Batch endpoint: gather all CLI tool statuses in one round-trip

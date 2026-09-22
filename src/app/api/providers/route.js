@@ -9,6 +9,7 @@ import {
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
+import { repairClaudeCliAccountsOnce } from "@/shared/services/claudeCliAccountRepair";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,12 @@ async function normalizeProxyPoolId(proxyPoolId) {
 // GET /api/providers - List all connections
 export async function GET() {
   try {
+    // Once per process, and settled before the rows are read: an account an
+    // older "Check" wrongly disabled would otherwise be counted as no
+    // connection on the first load after a restart. See the service for why the
+    // boot path alone is not early enough.
+    await repairClaudeCliAccountsOnce();
+
     const connections = await getProviderConnections();
 
     // Build nodeNameMap for compatible providers (id → name)
