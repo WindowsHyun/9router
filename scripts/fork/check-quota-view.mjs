@@ -32,6 +32,11 @@ const ROOT = process.env.ROUTER_ROOT
 const PORT = 21998;
 const PASSWORD = "quota-view-test-password";
 const DATA_DIR = path.join(os.tmpdir(), `9r-quota-view-${Date.now()}`);
+// Two accounts of one provider, so grouping and its picker have something
+// real to do, and so a per-card assertion can tell "once per card" apart
+// from "once on the page".
+const ACCOUNT_SUFFIXES = ["a", "b"];
+const ACCOUNTS = ACCOUNT_SUFFIXES.length;
 
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -148,7 +153,7 @@ try {
 
   // Two accounts of one provider, so the grouping and its picker have
   // something real to group. claude-cli takes an opaque token here.
-  for (const suffix of ["a", "b"]) {
+  for (const suffix of ACCOUNT_SUFFIXES) {
     await call({ method: "POST", path: "/api/cli-tools/claude-cli-accounts", headers: json },
       JSON.stringify({ oauthToken: `sk-ant-oat01-view-${suffix}`, name: `View account ${suffix}` }));
   }
@@ -174,6 +179,27 @@ try {
     throw e;
   }
   check("the view switch is rendered on the quota page", true);
+
+  // The flat "By account" view first, because it is the default and the one
+  // this check originally skipped: a provider that reports no upstream quota
+  // sends figures *and* a message saying whose numbers they are, and the flat
+  // view treated any message as "there is nothing to show" — so it hid the
+  // figures entirely and printed the message twice.
+  const messageText = /Counted by 9Router/;
+  const cardText = async () => (await page.locator("body").innerText());
+
+  await waitFor(async () => messageText.test(await cardText()), 60000,
+    "the routed-usage card to load");
+  const flat = await cardText();
+  const flatMessages = (flat.match(new RegExp(messageText.source, "g")) || []).length;
+  // One card per account here, so one note per account. The bug printed it
+  // twice per card — once in place of the table and once underneath — so this
+  // reads 4 when it regresses and 2 when it is right.
+  check("the account view shows the source note once per card, not twice",
+    flatMessages === ACCOUNTS, `found ${flatMessages} copies for ${ACCOUNTS} accounts`);
+  check("the account view still shows the routed figures themselves",
+    /routed 24h|routed 5h|routed 7d/.test(flat),
+    "the figures were replaced by the message instead of sitting under it");
 
   // Attribute reads are not auto-waited the way actions are, so poll rather
   // than racing React's re-render.
