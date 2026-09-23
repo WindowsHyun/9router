@@ -482,8 +482,15 @@ export default function ProviderLimits() {
     // Throttle Claude: poll its quota every Nth auto-tick (manual force bypasses)
     const tick = (tickCountRef.current += 1);
     const claudeEvery = Math.round(CLAUDE_REFRESH_INTERVAL_MS / REFRESH_INTERVAL_MS);
+    // claude-cli polls the same Anthropic usage endpoint as claude, against the
+    // same per-token 429 cooldown — so it has to share the throttle. Polling it
+    // every tick would rate-limit both providers, not just itself.
+    const throttled = (provider) => provider === "claude" || provider === "claude-cli";
+    // The first tick always fetches: throttling it leaves the card empty on
+    // open until the Nth minute, which reads as "no quota" rather than "not
+    // polled yet".
     const shouldFetch = (conn) =>
-      force || conn.provider !== "claude" || tick % claudeEvery === 0;
+      force || !throttled(conn.provider) || tick === 1 || tick % claudeEvery === 0;
 
     try {
       const visibleConnections = await fetchConnections(page);

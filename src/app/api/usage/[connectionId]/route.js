@@ -141,16 +141,14 @@ export async function GET(request, { params }) {
     const isApikeyEligible =
       isApikeyAuth && USAGE_APIKEY_PROVIDERS.includes(connection.provider);
 
-    // A provider whose credential is local (claude-cli) stores its
-    // connections with authType "none" and reports no quota upstream. They are still worth tracking, from what this server routed —
-    // getRoutedUsage says so in its own message and flags every figure
-    // unlimited, so nothing is presented as a subscription limit.
-    if (USAGE_ROUTED_PROVIDERS.includes(connection.provider)) {
-      const { getRoutedUsage } = await import("@/shared/services/routedUsage");
-      return Response.json(await getRoutedUsage(connection));
-    }
+    // A provider whose credential is local stores its connections with
+    // authType "none", which is an auth shape and not a statement about
+    // quota — claude-cli holds an ordinary Claude subscription and has real
+    // windows to report. It is handled below, once there is a proxy config to
+    // make the upstream call with.
+    const isRouted = USAGE_ROUTED_PROVIDERS.includes(connection.provider);
 
-    if (!isOAuth && !isApikeyEligible) {
+    if (!isOAuth && !isApikeyEligible && !isRouted) {
       return Response.json({ message: "Usage not available for this connection" });
     }
 
@@ -163,6 +161,20 @@ export async function GET(request, { params }) {
       vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
       strictProxy: false,
     };
+
+    // Claude Code CLI reads the same Anthropic usage endpoint as the `claude`
+    // provider, with the same 5h/7d windows — that is what gives its card a
+    // percentage, a bar and a countdown instead of bare counters. Counting
+    // what this server routed is the fallback, for an account whose local
+    // credential has expired or was never completed.
+    if (isRouted) {
+      if (connection.provider === "claude-cli") {
+        const { getClaudeCliUsage } = await import("@/shared/services/claudeCliUsage");
+        return Response.json(await getClaudeCliUsage(connection, proxyOptions, { force }));
+      }
+      const { getRoutedUsage } = await import("@/shared/services/routedUsage");
+      return Response.json(await getRoutedUsage(connection));
+    }
 
     // Refresh credentials only for OAuth connections (apikey has no token refresh)
     if (isOAuth) {
