@@ -27,10 +27,13 @@ const providerHandlers = {
     getUsage: getCodexUsage,
     sendPing: sendCodexPing,
   },
-  // Deliberately no getUsage: Claude Code exposes no non-interactive quota
-  // endpoint, so there is no reactive mode here — only cron schedules. Both
-  // send entries point at the CLI because spawning the binary is the only way
-  // to reach this provider at all.
+  // No getUsage yet, so this provider runs on cron schedules only. Its quota
+  // *is* readable — see claudeCliUsage.js — but both call sites below pass
+  // `connection.accessToken`, which for claude-cli is the literal "cli"; the
+  // real credential has to be resolved from the account. Wiring reactive mode
+  // means threading the connection through, not swapping in a function.
+  // Both send entries point at the CLI because spawning the binary is the only
+  // way to reach this provider at all.
   "claude-cli": {
     sendPing: sendClaudeCliPing,
     sendPingViaCli: sendClaudeCliPing,
