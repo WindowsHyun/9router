@@ -43,16 +43,29 @@ import {
   CLAUDE_CLI_DEFAULT_MAX_TURNS,
   CLAUDE_CLI_IDLE_TIMEOUT_MS,
   CLAUDE_CLI_INLINE_SYSTEM_PROMPT,
+  CLAUDE_CLI_MCP_TOOL_PREFIX,
   CLAUDE_CLI_MODEL_PATTERN,
   CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
   CLAUDE_CLI_ENV_ALLOWLIST,
   CLAUDE_CLI_QUEUE_TIMEOUT_MS,
-  CLAUDE_CLI_UPSTREAM_MODELS,
   claudeCliArgvBudget,
+  CLAUDE_CLI_UPSTREAM_MODELS,
   resolveClaudeCliMaxConcurrency,
   resolveClaudeCliMaxTurns,
 } from "../config/claudeCli.js";
 import { createConcurrencyGate } from "../utils/concurrencyGate.js";
+import {
+  callerToolName,
+  inertMcpServerSource,
+  mcpConfigDocument,
+  toMcpManifest,
+} from "./claudeCliTools.js";
+import { buildReplayFrames, framesToStdin, inlineSystemIntoFrames } from "./claudeCliReplay.js";
+import {
+  ignoredRequestFields,
+  toolsAreWanted,
+  unsupportedRequestFeature,
+} from "./claudeCliRequestSupport.js";
 
 // ─── Binary discovery ────────────────────────────────────────────────────────
 
@@ -155,6 +168,8 @@ export function buildSpawnPlan(bin, args) {
   return { command: process.execPath, args: [target, ...args], options: {} };
 }
 
+const NEWLINE = String.fromCharCode(10);
+
 // ─── Request shaping ─────────────────────────────────────────────────────────
 
 function blockText(part) {
@@ -234,28 +249,83 @@ export function buildClaudeCliPrompt(messages) {
  * (Nothing is ever spawned through a shell, so argv itself is not an injection
  * surface — see buildSpawnPlan.)
  */
-export function planClaudeCliInvocation({ model, messages, platform = process.platform, maxTurns }) {
+export function planClaudeCliInvocation({
+  model, messages, platform = process.platform, maxTurns, tools,
+}) {
   const { system, prompt, turnsText } = buildClaudeCliPrompt(messages);
+  // Advertised to the CLI through MCP, never executed here — see
+  // claudeCliTools.js. It leaves the plan as data so the spawn can write it to
+  // a file, which keeps this function a pure function of the request.
+  const manifest = toMcpManifest(tools);
+  // With tools advertised, ending the turn on the proposal IS the result, so
+  // the limit is pinned to one turn no matter what the caller asked for. Given
+  // another turn the CLI would go on to *invoke* the inert server, read its
+  // refusal, and answer with an apology — losing the tool call the client was
+  // waiting for. Without tools the caller's own limit still applies.
+  const turnLimit = manifest.length ? 1 : maxTurns;
   const budget = claudeCliArgvBudget(platform);
-  const inlineSystem = Boolean(system) && system.length + prompt.length > budget;
 
+  // Replay the conversation as turns when it can be: the model then has had the
+  // conversation rather than reading a transcript of one, and a tool result is
+  // a result linked to the call that produced it instead of a line of prose.
+  const replay = buildReplayFrames(messages, CLAUDE_CLI_MCP_TOOL_PREFIX);
+  if (replay.frames) {
+    const inlineSystem = Boolean(replay.system) && replay.system.length > budget;
+    const frames = inlineSystem
+      ? inlineSystemIntoFrames(replay.frames, replay.system)
+      : replay.frames;
+    return {
+      args: buildClaudeCliArgs({
+        model,
+        // Never empty: without a system prompt Claude Code applies its own
+        // agent prompt, which is neither what an API caller asked for nor what
+        // they expect to pay for.
+        system: inlineSystem
+          ? CLAUDE_CLI_INLINE_SYSTEM_PROMPT
+          : (replay.system || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT),
+        maxTurns: turnLimit,
+        streamJsonInput: true,
+      }),
+      stdin: framesToStdin(frames),
+      inlinedSystem: inlineSystem,
+      systemChars: replay.system.length,
+      frameCount: frames.length,
+      replayed: true,
+      manifest,
+    };
+  }
+
+  // Ends on an assistant turn, so there is no frame to query with. The whole
+  // conversation goes in as one prompt, the way it always did.
+  const inlineSystem = Boolean(system) && system.length + prompt.length > budget;
   if (!inlineSystem) {
     return {
-      // Never omit --system-prompt: without it Claude Code's own agent prompt
-      // applies, which is neither what an API caller asked for nor what they
-      // expect to pay for.
-      args: buildClaudeCliArgs({ model, system: system || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT, maxTurns }),
-      prompt,
+      args: buildClaudeCliArgs({
+        model,
+        system: system || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
+        maxTurns: turnLimit,
+      }),
+      stdin: prompt,
       inlinedSystem: false,
+      frameCount: 0,
+      replayed: false,
+      manifest,
     };
   }
 
   return {
-    args: buildClaudeCliArgs({ model, system: CLAUDE_CLI_INLINE_SYSTEM_PROMPT, maxTurns }),
-    prompt: `[System]\n${system}\n\n${turnsText}`,
+    args: buildClaudeCliArgs({
+      model, system: CLAUDE_CLI_INLINE_SYSTEM_PROMPT, maxTurns: turnLimit,
+    }),
+    stdin: `[System]` + NEWLINE + system + NEWLINE + NEWLINE + turnsText,
     inlinedSystem: true,
+    systemChars: system.length,
+    frameCount: 0,
+    replayed: false,
+    manifest,
   };
 }
+
 
 /** Resolved upstream model id, or null when it is not safe to put on argv. */
 export function resolveClaudeCliModel(model) {
@@ -264,7 +334,9 @@ export function resolveClaudeCliModel(model) {
   return CLAUDE_CLI_MODEL_PATTERN.test(upstream) ? upstream : null;
 }
 
-export function buildClaudeCliArgs({ model, system, maxTurns }) {
+export function buildClaudeCliArgs({
+  model, system, maxTurns, mcpConfigFile, streamJsonInput,
+} = {}) {
   const args = [
     "-p",
     "--output-format", "stream-json",
@@ -274,10 +346,26 @@ export function buildClaudeCliArgs({ model, system, maxTurns }) {
     "--tools", "",
     "--setting-sources", "",
     "--strict-mcp-config",
+    // Nothing here may wait for a human. Without these the CLI can stop on a
+    // permission prompt with no terminal to answer it, which reaches the client
+    // as a stream that simply stops.
+    "--permission-mode", "dontAsk",
+    "--disable-slash-commands",
+    // One request is one turn; a saved session would accumulate on the host and
+    // is never resumed, because every request arrives carrying its own history.
+    "--no-session-persistence",
   ];
+  // History goes in as real turns rather than a transcript pasted into one
+  // prompt — see claudeCliReplay.js.
+  if (streamJsonInput) args.push("--input-format", "stream-json");
   const upstreamModel = resolveClaudeCliModel(model);
   if (upstreamModel) args.push("--model", upstreamModel);
+  // Always on argv. `--system-prompt-file` exists but is not equivalent: the
+  // same text delivered that way is not treated as authoritative instruction.
   if (system) args.push("--system-prompt", system);
+  // The caller's tools, behind the inert MCP server. Omitted entirely when the
+  // request has none, so a plain chat spawns no extra process.
+  if (mcpConfigFile) args.push("--mcp-config", mcpConfigFile);
   return args;
 }
 
@@ -330,6 +418,29 @@ function usagePayload(usage) {
 }
 
 /**
+ * The per-request state translateClaudeCliEvent threads through one stream.
+ *
+ * Exported so a test drives the translator with the same state the executor
+ * gives it — a hand-rolled copy would drift from the real one, and the tool
+ * bookkeeping is exactly where that would go unnoticed.
+ */
+export function createClaudeCliContext({ id, created, model }) {
+  return {
+    id,
+    created,
+    model,
+    roleSent: false,
+    stopReason: null,
+    usage: null,
+    // content-block index -> tool_calls index, so argument fragments land on
+    // the call they belong to. Text and tool blocks share one index space.
+    toolBlocks: new Map(),
+    toolCount: 0,
+    sawToolCall: false,
+  };
+}
+
+/**
  * Translate one `claude --output-format stream-json` line into OpenAI SSE frames.
  * Returns `{ frames, finished }`; never throws — an unknown line yields nothing.
  */
@@ -340,7 +451,26 @@ export function translateClaudeCliEvent(event, ctx) {
 
   if (event?.type === "stream_event") {
     const inner = event.event;
-    if (inner?.type === "content_block_delta") {
+    if (inner?.type === "content_block_start" && inner.content_block?.type === "tool_use") {
+      // The model proposes, the client executes. Opening the call as soon as
+      // the block starts — rather than waiting for the whole thing — is what
+      // every other provider does, and it lets the client read the name while
+      // the arguments are still arriving.
+      const block = inner.content_block;
+      const index = ctx.toolCount++;
+      ctx.toolBlocks.set(inner.index, index);
+      ctx.sawToolCall = true;
+      const call = {
+        index,
+        id: block.id || `call_${index}`,
+        type: "function",
+        // The CLI namespaces every MCP tool; the client only knows the name it
+        // sent, so it gets that one back.
+        function: { name: callerToolName(block.name), arguments: "" },
+      };
+      if (!ctx.roleSent) { ctx.roleSent = true; chunk({ role: "assistant", tool_calls: [call] }); }
+      else chunk({ tool_calls: [call] });
+    } else if (inner?.type === "content_block_delta") {
       const delta = inner.delta || {};
       if (delta.type === "text_delta" && delta.text) {
         if (!ctx.roleSent) { ctx.roleSent = true; chunk({ role: "assistant", content: delta.text }); }
@@ -348,6 +478,13 @@ export function translateClaudeCliEvent(event, ctx) {
       } else if (delta.type === "thinking_delta" && delta.thinking) {
         if (!ctx.roleSent) { ctx.roleSent = true; chunk({ role: "assistant", reasoning_content: delta.thinking }); }
         else chunk({ reasoning_content: delta.thinking });
+      } else if (delta.type === "input_json_delta" && delta.partial_json) {
+        // Arguments arrive as JSON fragments that only parse once joined, which
+        // is exactly the shape an OpenAI client already reassembles.
+        const index = ctx.toolBlocks.get(inner.index);
+        if (index !== undefined) {
+          chunk({ tool_calls: [{ index, function: { arguments: delta.partial_json } }] });
+        }
       }
     } else if (inner?.type === "message_delta") {
       if (inner.delta?.stop_reason) ctx.stopReason = inner.delta.stop_reason;
@@ -359,10 +496,27 @@ export function translateClaudeCliEvent(event, ctx) {
   }
 
   if (event?.type === "result") {
-    // `is_error` can ride along with subtype "success" (e.g. an upstream 529 the
-    // CLI surfaced as its final text). Delivering that as assistant content would
-    // hand the client a successful completion whose body is an error message.
-    if (event.subtype !== "success" || event.is_error === true) {
+    // Replaying history produces one of these per historical frame. A
+    // `shouldQuery: false` turn is accepted without calling the model, and the
+    // CLI reports that as a result with num_turns 0 and nothing in it. Only the
+    // query's own result ends the stream — taking an acknowledgment for the end
+    // would close the response before a single token arrived, which is exactly
+    // what "the output stops" looks like from outside.
+    if (event.num_turns === 0) return { frames, finished: false };
+    if (!ctx.stopReason && event.stop_reason) ctx.stopReason = event.stop_reason;
+    // A turn that ends by proposing a tool call always trips --max-turns: the
+    // CLI is holding an unanswered call with no turn left to answer it, so it
+    // reports subtype "error_max_turns" with is_error true. That is the agent
+    // loop's verdict, not the completion's — the call itself is complete, and
+    // running it belongs to the client that supplied the tool. Reading it as a
+    // failure is what cut the stream off mid-answer for every tool-using
+    // client.
+    const proposedToolCall = ctx.sawToolCall && event.stop_reason === "tool_use";
+    // `is_error` can otherwise ride along with subtype "success" (e.g. an
+    // upstream 529 the CLI surfaced as its final text). Delivering that as
+    // assistant content would hand the client a successful completion whose
+    // body is an error message.
+    if (!proposedToolCall && (event.subtype !== "success" || event.is_error === true)) {
       const message = event.error || event.result || `Claude CLI returned ${event.subtype}`;
       const code = event.subtype !== "success" ? event.subtype : "upstream_error";
       frames.push(sseChunk({ error: { message: String(message), type: "claude_cli_error", code } }));
@@ -387,6 +541,69 @@ export function translateClaudeCliEvent(event, ctx) {
   }
 
   return { frames, finished: false };
+}
+
+/**
+ * Write what this request needs the CLI to read from disk.
+ *
+ * The system prompt, because a coding agent's runs to tens of thousands of
+ * characters and Windows caps a command line at 32,767 — on argv it used to be
+ * swapped for a stub and pasted into the prompt instead. And the tool
+ * inventory, with the MCP server that serves it.
+ *
+ * Per request, in its own directory: two requests advertise different tools and
+ * the CLI starts the server when it feels like it, so a shared path would let a
+ * late start pick up another request's inventory.
+ *
+ * Returns null when there is genuinely nothing to write, or when writing fails
+ * — the caller then puts the system prompt back on argv rather than dropping
+ * it.
+ */
+function writeRequestFiles({ manifest }) {
+  if (!manifest?.length) return null;
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "9router-claude-req-"));
+    const files = { dir };
+    {
+      // .cjs so the extension decides the module kind: a temp directory has no
+      // package.json to consult, and the generated program is a plain script.
+      const serverPath = path.join(dir, "inert-mcp.cjs");
+      files.configPath = path.join(dir, "mcp.json");
+      fs.writeFileSync(serverPath, inertMcpServerSource(manifest));
+      fs.writeFileSync(files.configPath, JSON.stringify(
+        mcpConfigDocument(process.execPath, serverPath),
+      ));
+    }
+    return files;
+  } catch {
+    // Losing the tools is bad; failing the request over a temp file is worse.
+    // The caller then gets a plain answer instead of a tool call.
+    return null;
+  }
+}
+
+/**
+ * Stop the interpreter and everything it started.
+ *
+ * `child.kill()` signals one process. Claude Code spawns its own children —
+ * the MCP server here, and on Windows the npm shim is cmd.exe wrapping node —
+ * and those keep the request's pipes open after the parent is gone, so a
+ * cancelled request would linger and hold its gate slot. Kill the tree.
+ */
+function killClaudeCliTree(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore" })
+        .on("error", () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } });
+      return;
+    }
+    // Spawned detached, so the child leads its own group: the negated pid
+    // reaches every descendant in one call.
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    try { child.kill("SIGKILL"); } catch { /* already gone */ }
+  }
 }
 
 // One gate per server process (survives Next.js module reloads).
@@ -438,19 +655,54 @@ export class ClaudeCliExecutor extends BaseExecutor {
       return { response: errorResponse(`Unsupported model id for the Claude Code CLI: ${model}`, "invalid_model", 400) };
     }
 
-    const invocation = planClaudeCliInvocation({ model, messages, maxTurns: b.max_turns });
-    const prompt = invocation.prompt;
-    const plan = buildSpawnPlan(bin, invocation.args);
-    if (plan.error) {
-      log?.info?.("CLAUDE-CLI", plan.error);
-      return { response: errorResponse(plan.error, "unsupported_binary", 503) };
+    // Refused before anything is spawned: these change the shape of the answer
+    // the caller promised someone else, and the CLI cannot give them. Answering
+    // anyway would be answering a different question.
+    const unsupported = unsupportedRequestFeature(b);
+    if (unsupported) {
+      return { response: errorResponse(unsupported.message, unsupported.code, 400) };
+    }
+    // The rest only tune an answer that can still be given. Named in the log so
+    // the difference is visible when output is not what someone expected.
+    const ignored = ignoredRequestFields(b);
+    if (ignored.length) {
+      log?.info?.("CLAUDE-CLI", `no equivalent in the CLI, ignored: ${ignored.join(", ")}`);
+    }
+
+    const invocation = planClaudeCliInvocation({
+      model,
+      messages,
+      maxTurns: b.max_turns,
+      // tool_choice "none" is honoured by not advertising them at all, which is
+      // the one part of tool_choice this provider can actually implement.
+      tools: toolsAreWanted(b) ? b.tools : undefined,
+    });
+    const stdin = invocation.stdin;
+    // Only the binary can make a plan invalid, so this is settled before any
+    // file is written — the tool files come later, once the request is going
+    // to spawn.
+    const basePlan = buildSpawnPlan(bin, invocation.args);
+    if (basePlan.error) {
+      log?.info?.("CLAUDE-CLI", basePlan.error);
+      return { response: errorResponse(basePlan.error, "unsupported_binary", 503) };
     }
 
     log?.info?.(
       "CLAUDE-CLI",
-      `claude -p → model=${model}, bin=${bin}, promptChars=${prompt.length}`
-        + (invocation.inlinedSystem ? " (system prompt inlined into stdin)" : ""),
+      `claude -p → model=${model}, bin=${bin}, stdinChars=${stdin.length}`
+        + (invocation.manifest.length ? `, tools=${invocation.manifest.length}` : "")
+        + (invocation.replayed ? `, replayed ${invocation.frameCount} turns` : ", flattened prompt")
     );
+    if (invocation.inlinedSystem) {
+      // Worth saying plainly: measured on 2.1.280, a system prompt delivered
+      // inside the conversation is recognised as one and declined — the model
+      // called it an injection attempt. The caller's instructions reach the
+      // model but may not be followed. argv is the only authoritative channel,
+      // and this prompt does not fit in it.
+      log?.info?.("CLAUDE-CLI",
+        `system prompt (${invocation.systemChars} chars) exceeds the argv budget and `
+        + "was moved into the conversation; the model may not treat it as authoritative");
+    }
 
     // Wait for a spawn slot before opening the stream, so a burst queues instead
     // of starting N interpreters at once.
@@ -469,14 +721,37 @@ export class ClaudeCliExecutor extends BaseExecutor {
       };
     }
 
-    const ctx = {
+    // After the slot, deliberately: a request that queues out or is abandoned
+    // never spawns, so it should never leave a directory behind either.
+    const requestFiles = writeRequestFiles(invocation);
+    // Once per request, on every path that can end it.
+    //
+    // Retried once, because the MCP server is a grandchild: it exits when the
+    // interpreter closes its stdin, which can be a moment after the "close"
+    // this runs from. Windows refuses to delete a script a live process is
+    // still executing, and giving up there would leak a directory per request.
+    let toolFilesRemoved = false;
+    const cleanupToolFiles = (retry = true) => {
+      if (!requestFiles || toolFilesRemoved) return;
+      try {
+        fs.rmSync(requestFiles.dir, { recursive: true, force: true });
+        toolFilesRemoved = true;
+      } catch {
+        if (!retry) return;
+        // Unref'd: this must never be the reason the process stays alive.
+        const timer = setTimeout(() => cleanupToolFiles(false), 2000);
+        if (timer.unref) timer.unref();
+      }
+    };
+    const plan = requestFiles
+      ? buildSpawnPlan(bin, [...invocation.args, "--mcp-config", requestFiles.configPath])
+      : basePlan;
+
+    const ctx = createClaudeCliContext({
       id: `chatcmpl-${Date.now().toString(36)}`,
       created: Math.floor(Date.now() / 1000),
       model,
-      roleSent: false,
-      stopReason: null,
-      usage: null,
-    };
+    });
 
     // Spawn first and wait for the OS to accept it. Node emits "spawn" or
     // "error" (ENOENT for a missing install) before anything is streamed, so a
@@ -490,6 +765,11 @@ export class ClaudeCliExecutor extends BaseExecutor {
         // resolveSpawnCwd for why the directory has to be one we created.
         cwd: resolveSpawnCwd(),
         stdio: ["pipe", "pipe", "pipe"],
+        // Leads its own process group, so killClaudeCliTree can reach the MCP
+        // server and anything else the interpreter starts. Not on Windows,
+        // where detaching would open a console window; taskkill /T walks the
+        // tree there without one.
+        detached: process.platform !== "win32",
         ...plan.options,
       });
       await new Promise((resolve, reject) => {
@@ -498,6 +778,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
       });
     } catch (err) {
       releaseSlot();
+      cleanupToolFiles();
       const notFound = err?.code === "ENOENT" || /ENOENT|not found/i.test(err?.message || "");
       log?.info?.("CLAUDE-CLI", `spawn failed for ${bin}: ${err?.message}`);
       return {
@@ -548,7 +829,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
         // Exposed to cancel() below, which runs outside this closure.
         streamTeardown = () => {
           closed = true;
-          try { child.kill("SIGTERM"); } catch { /* already gone */ }
+          killClaudeCliTree(child);
         };
 
         let idleTimer = null;
@@ -556,7 +837,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
             fail(`Claude CLI produced no output for ${CLAUDE_CLI_IDLE_TIMEOUT_MS}ms`, "idle_timeout");
-            try { child.kill("SIGKILL"); } catch { /* already gone */ }
+            killClaudeCliTree(child);
           }, CLAUDE_CLI_IDLE_TIMEOUT_MS);
           if (idleTimer.unref) idleTimer.unref();
         };
@@ -564,7 +845,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
 
         const onAbort = () => {
           clearIdleTimer();
-          try { child.kill("SIGTERM"); } catch { /* already gone */ }
+          killClaudeCliTree(child);
           finish();
         };
         signal?.addEventListener?.("abort", onAbort, { once: true });
@@ -618,6 +899,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
         child.on("close", (code) => {
           clearIdleTimer();
           freeSlot();
+          cleanupToolFiles();
           signal?.removeEventListener?.("abort", onAbort);
           if (stdoutBuffer.trim()) handleLine(stdoutBuffer);
           if (closed || spawnFailed) return;
@@ -632,7 +914,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
 
         resetIdleTimer();
         child.stdin.on("error", () => { /* child died first — close handler reports it */ });
-        child.stdin.end(prompt);
+        child.stdin.end(stdin);
       },
       // Consumer gave up on the body: stop the interpreter rather than leaking it.
       cancel() {
@@ -644,7 +926,13 @@ export class ClaudeCliExecutor extends BaseExecutor {
       response: new Response(sseStream, { status: 200, headers: SSE_HEADERS }),
       url: CLAUDE_CLI_BASE_URL,
       headers: {},
-      transformedBody: { model, bin, promptChars: prompt.length, inlinedSystem: invocation.inlinedSystem },
+      transformedBody: {
+        model,
+        bin,
+        stdinChars: stdin.length,
+        replayedTurns: invocation.replayed ? invocation.frameCount : 0,
+        inlinedSystem: invocation.inlinedSystem,
+      },
     };
   }
 }

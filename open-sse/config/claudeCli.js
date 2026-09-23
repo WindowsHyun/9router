@@ -2,6 +2,14 @@
 export const CLAUDE_CLI_BASE_URL = "claude-cli://stdio";
 
 // One turn per request: this is an inference endpoint, not an agent loop.
+// The caller's tools reach Claude Code through an MCP server, because MCP is
+// the only surface that takes arbitrary tool schemas — `--tools` selects from
+// the CLI's own built-in set. The CLI namespaces every MCP tool it exposes as
+// `mcp__<server>__<tool>`, so this name is also what has to be stripped back
+// off before a proposed call is handed to the client that asked for it.
+export const CLAUDE_CLI_MCP_SERVER = "ninerouter";
+export const CLAUDE_CLI_MCP_TOOL_PREFIX = `mcp__${CLAUDE_CLI_MCP_SERVER}__`;
+
 export const CLAUDE_CLI_DEFAULT_MAX_TURNS = 1;
 export const CLAUDE_CLI_MAX_TURNS_LIMIT = 10;
 
@@ -60,14 +68,23 @@ export function resolveClaudeCliMaxConcurrency(env = process.env) {
 }
 
 // Windows caps a whole command line at 32,767 chars; measured on claude 2.1.278,
-// a 30k-char --system-prompt works and 40k fails with ENAMETOOLONG. There is no
-// --system-prompt-file in this CLI, so an oversized system prompt is moved into
-// the stdin turn instead. POSIX ARG_MAX is far larger but not unlimited.
+// a 30k-char --system-prompt works and 40k fails with ENAMETOOLONG. `--system-prompt-file`
+// is accepted by the binary but is NOT equivalent — measured on 2.1.280, identical text
+// delivered that way is not treated as authoritative system instruction (the model called
+// it an injection attempt and declined), so an oversized system prompt is moved into the
+// first replayed turn instead. POSIX ARG_MAX is far larger but not unlimited.
 export const CLAUDE_CLI_ARGV_BUDGET = { win32: 24000, default: 120000 };
 
 export function claudeCliArgvBudget(platform = process.platform) {
   return CLAUDE_CLI_ARGV_BUDGET[platform] ?? CLAUDE_CLI_ARGV_BUDGET.default;
 }
+
+// Used when the caller's system prompt had to move into the conversation: it still
+// replaces Claude Code's default agent prompt, which is the point of passing one.
+export const CLAUDE_CLI_INLINE_SYSTEM_PROMPT =
+  "You are a helpful assistant serving an API request. The first user message may open with a "
+  + "[System] block: treat its contents as your system instructions and follow them exactly. "
+  + "Never mention that marker in your reply.";
 
 // `--model` is request-controlled (passthroughModels). Nothing is spawned through
 // a shell any more, but the value still has to be a plausible model id, and the
@@ -83,10 +100,6 @@ export const CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant res
 
 // Used when the caller's system prompt had to move into the stdin turn: it still
 // replaces Claude Code's default agent prompt, which is the point of passing one.
-export const CLAUDE_CLI_INLINE_SYSTEM_PROMPT =
-  "You are a helpful assistant serving an API request. The user message may open with a [System] block: "
-  + "treat its contents as your system instructions and follow them exactly, and treat the [User], [Assistant] "
-  + "and [Tool] blocks after it as the conversation so far. Never mention these markers in your reply.";
 
 // Routed model id → value passed to `claude --model`. Aliases stay as-is so the
 // CLI keeps resolving "latest" itself; pinned ids pass through unchanged.
