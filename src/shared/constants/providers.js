@@ -169,10 +169,11 @@ export const USAGE_APIKEY_PROVIDERS = REGISTRY
   .filter(r => r.features?.usageApikey)
   .map(r => r.id);
 
-// Providers with no upstream quota endpoint at all, whose figures come from
-// what this server routed (see src/shared/services/routedUsage.js). Their
-// connections carry authType "none", so they are eligible on this flag rather
-// than on an auth type.
+// Providers whose connections carry authType "none" because their credential
+// is local, so they are eligible for a usage lookup on this flag rather than
+// on an auth type. It does not mean there is no upstream quota: claude-cli
+// reads the real Claude windows (src/shared/services/claudeCliUsage.js) and
+// only falls back to counting what this server routed (routedUsage.js).
 export const USAGE_ROUTED_PROVIDERS = REGISTRY
   .filter(r => r.features?.usageRouted)
   .map(r => r.id);
