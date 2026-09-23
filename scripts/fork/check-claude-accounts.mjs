@@ -233,7 +233,13 @@ try {
   // version back from the same probe the badge uses. On a machine with no
   // binary it must refuse cleanly rather than throw.
   const updated = await call({ method: "POST", path: "/api/cli-tools/claude-cli-settings", headers: json });
-  const installed = (await call({ method: "GET", path: "/api/cli-tools/claude-cli-settings", headers: { cookie } })).json?.installed;
+  const settings = (await call({ method: "GET", path: "/api/cli-tools/claude-cli-settings", headers: { cookie } })).json;
+  const installed = settings?.installed;
+  // The card hides the Update button when this is true, because an in-container
+  // update cannot be made durable — so the flag has to be reported, not implied.
+  check("status reports whether this is a container",
+    typeof settings?.containerised === "boolean" || installed !== true,
+    `containerised=${settings?.containerised}`);
   if (installed) {
     check("the Update button reports a version, updated or already current",
       updated.status === 200 && typeof updated.json?.version === "string",

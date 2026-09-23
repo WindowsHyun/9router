@@ -85,8 +85,14 @@ export default function ClaudeCliStatusCard() {
             Recheck
           </Button>
           {/* Only when a binary is actually present — there is nothing to
-              update otherwise, and the route would just refuse. */}
-          {status?.installed && (
+              update otherwise, and the route would just refuse.
+
+              In a container the button is left out entirely rather than
+              offered and failed: the image installs Claude Code as root under
+              /usr/local, the runtime user cannot write there, and even a
+              successful update would be lost on the next restart. The note
+              below says what to do instead. */}
+          {status?.installed && !status?.containerised && (
             <Button
               size="sm"
               variant="secondary"
@@ -104,6 +110,17 @@ export default function ClaudeCliStatusCard() {
         <div className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-text-muted">
           <span className="font-medium text-text-main">Binary:</span> {status.bin}
           {status.source ? ` (${status.source})` : ""}
+        </div>
+      )}
+
+      {/* In a container there is no Update button, so say what to do instead —
+          otherwise the version just looks stuck with no explanation. */}
+      {status?.installed && status?.containerised && (
+        <div className="mt-2 rounded-lg bg-surface-2 px-3 py-2 text-xs text-text-muted leading-relaxed">
+          Updating from here is not possible in a container: Claude Code is installed as root under{" "}
+          <code>/usr/local</code> and this process does not run as root. Even if it could, the new
+          version would live in the writable layer and be lost on the next restart. Bump{" "}
+          <code>CLAUDE_CODE_VERSION</code> in the Dockerfile and rebuild the image instead.
         </div>
       )}
 
