@@ -13,6 +13,13 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 const VERSION_TIMEOUT_MS = 10000;
+// `claude update` downloads a build, so it needs far longer than a version
+// probe — but still a bound, or a hung download holds the request open.
+const UPDATE_TIMEOUT_MS = 300000;
+
+// One update at a time per process. Two concurrent installs would race over the
+// same files, and the button is easy to double-click while nothing looks busy.
+const g = (global.__claudeCliUpdate ??= { running: false });
 
 // Mirror the executor's env scrub so the probe behaves like a routed request.
 function probeEnv() {
@@ -77,5 +84,86 @@ export async function GET() {
     // A version probe never touches the account, so this cannot confirm login;
     // the first routed request surfaces an auth problem as a stream error.
     authHint: version ? null : "Binary found but `claude --version` failed — check the install.",
+  });
+}
+
+/**
+ * POST — run `claude update` and report what happened.
+ *
+ * The CLI owns the upgrade; this only invokes it and reads the version back, so
+ * there is no second notion of "latest" here to drift from the real one.
+ *
+ * Two things this cannot do anything about, and says so rather than failing
+ * opaquely:
+ *
+ *   - In the container image Claude Code is installed with `npm install -g`
+ *     into /usr/local, which the `node` runtime user cannot write. The update
+ *     then fails on permissions.
+ *   - Even where it succeeds in a container, the change lives in the writable
+ *     layer and a restart drops back to the version baked into the image. The
+ *     durable fix is to bump CLAUDE_CODE_VERSION and rebuild.
+ */
+export async function POST() {
+  const bin = resolveClaudeBin();
+  if (!bin) {
+    return NextResponse.json({
+      updated: false,
+      error: "Claude Code is not installed here, so there is nothing to update.",
+    }, { status: 400 });
+  }
+
+  if (g.running) {
+    return NextResponse.json({
+      updated: false,
+      error: "An update is already running. Wait for it to finish.",
+    }, { status: 409 });
+  }
+
+  const before = await readVersion(bin);
+  g.running = true;
+  let stdout = "";
+  let stderr = "";
+  let failed = null;
+  try {
+    const result = await execFileAsync(bin, ["update"], {
+      windowsHide: true,
+      timeout: UPDATE_TIMEOUT_MS,
+      env: probeEnv(),
+      maxBuffer: 1024 * 1024,
+    });
+    stdout = result.stdout || "";
+    stderr = result.stderr || "";
+  } catch (e) {
+    // A non-zero exit still carries the CLI's own explanation on stdout/stderr,
+    // which is more useful than the exec wrapper's message.
+    stdout = e.stdout || "";
+    stderr = e.stderr || "";
+    failed = e.killed || e.signal
+      ? `The update did not finish within ${Math.round(UPDATE_TIMEOUT_MS / 1000)}s.`
+      : (stderr.trim() || stdout.trim() || e.message);
+  } finally {
+    g.running = false;
+  }
+
+  const after = await readVersion(bin);
+  const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean).join("\n");
+
+  // Permission failures are the expected case in the container image, so name
+  // the real fix instead of surfacing an EACCES trace.
+  const permissionDenied = /EACCES|permission denied|not writable|EPERM/i.test(output + (failed || ""));
+
+  return NextResponse.json({
+    updated: Boolean(after && before && after !== before),
+    before,
+    version: after,
+    // Already current is a success, not a failure — the CLI exits 0 and says so.
+    unchanged: Boolean(after && before && after === before) && !failed,
+    error: failed,
+    output: output.slice(0, 2000),
+    hint: permissionDenied
+      ? "Claude Code is installed under /usr/local in this image and the runtime user cannot write there. "
+        + "Bump CLAUDE_CODE_VERSION in the Dockerfile and rebuild instead — an in-container update would not "
+        + "survive a restart anyway."
+      : null,
   });
 }

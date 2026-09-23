@@ -229,6 +229,24 @@ try {
     /9Router/.test(routed.json?.message || "") && routed.json?.source === "9router",
     `message=${routed.json?.message} source=${routed.json?.source}`);
 
+  // The Update button next to Recheck runs `claude update` and reads the
+  // version back from the same probe the badge uses. On a machine with no
+  // binary it must refuse cleanly rather than throw.
+  const updated = await call({ method: "POST", path: "/api/cli-tools/claude-cli-settings", headers: json });
+  const installed = (await call({ method: "GET", path: "/api/cli-tools/claude-cli-settings", headers: { cookie } })).json?.installed;
+  if (installed) {
+    check("the Update button reports a version, updated or already current",
+      updated.status === 200 && typeof updated.json?.version === "string",
+      `status=${updated.status} body=${updated.body.slice(0, 250)}`);
+    check("...and says which of the two happened",
+      updated.json?.updated === true || updated.json?.unchanged === true || Boolean(updated.json?.error),
+      `updated=${updated.json?.updated} unchanged=${updated.json?.unchanged} error=${updated.json?.error}`);
+  } else {
+    check("the Update button refuses cleanly with no binary installed",
+      updated.status === 400 && /not installed/i.test(updated.json?.error || ""),
+      `status=${updated.status} body=${updated.body.slice(0, 200)}`);
+  }
+
   // The Schedule button on the accounts card writes a cron entry under the
   // claude-cli auto-ping settings key, exactly like the OAuth providers do
   // under theirs. Proving the round-trip here is what distinguishes "the button

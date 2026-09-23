@@ -18,6 +18,10 @@ const STATUS_ENDPOINT = "/api/cli-tools/claude-cli-settings";
 export default function ClaudeCliStatusCard() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
+  // `claude update` downloads a build, so this is a slow button with its own
+  // state — the version badge is what confirms it landed.
+  const [updating, setUpdating] = useState(false);
+  const [updateResult, setUpdateResult] = useState(null);
 
   // Mount load runs as a promise chain (no setState in the effect body).
   useEffect(() => {
@@ -42,6 +46,24 @@ export default function ClaudeCliStatusCard() {
     }
   }, []);
 
+  // Runs `claude update` and re-reads the version from the same probe Recheck
+  // uses, so the badge cannot disagree with what actually got installed.
+  const update = useCallback(async () => {
+    setUpdating(true);
+    setUpdateResult(null);
+    try {
+      const res = await fetch(STATUS_ENDPOINT, { method: "POST" });
+      const data = await res.json();
+      setUpdateResult(data);
+      if (data.version) setStatus((prev) => ({ ...(prev || {}), version: data.version }));
+      else await refresh();
+    } catch (e) {
+      setUpdateResult({ error: e.message });
+    } finally {
+      setUpdating(false);
+    }
+  }, [refresh]);
+
   return (
     <Card>
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -59,9 +81,22 @@ export default function ClaudeCliStatusCard() {
           ) : (
             <Badge variant="danger">Not installed</Badge>
           )}
-          <Button size="sm" variant="secondary" icon="refresh" onClick={refresh} disabled={loading}>
+          <Button size="sm" variant="secondary" icon="refresh" onClick={refresh} disabled={loading || updating}>
             Recheck
           </Button>
+          {/* Only when a binary is actually present — there is nothing to
+              update otherwise, and the route would just refuse. */}
+          {status?.installed && (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="system_update_alt"
+              onClick={update}
+              disabled={loading || updating}
+            >
+              {updating ? "Updating…" : "Update"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -69,6 +104,32 @@ export default function ClaudeCliStatusCard() {
         <div className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-text-muted">
           <span className="font-medium text-text-main">Binary:</span> {status.bin}
           {status.source ? ` (${status.source})` : ""}
+        </div>
+      )}
+
+      {/* What the update actually did. "Already current" is a result, not a
+          non-event — without saying so, a no-op looks like a broken button. */}
+      {updateResult && (
+        <div
+          className={`mt-2 rounded-lg px-3 py-2 text-xs ${
+            updateResult.error
+              ? "border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
+              : "bg-surface-2 text-text-muted"
+          }`}
+        >
+          {updateResult.updated
+            ? `Updated ${updateResult.before || "?"} → ${updateResult.version}.`
+            : updateResult.unchanged
+              ? `Already on the latest version (${updateResult.version}).`
+              : updateResult.error || "The update finished without reporting a version."}
+          {updateResult.hint && (
+            <p className="mt-1 leading-relaxed">{updateResult.hint}</p>
+          )}
+          {updateResult.output && !updateResult.unchanged && (
+            <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all text-[10px] opacity-80">
+              {updateResult.output}
+            </pre>
+          )}
         </div>
       )}
 
