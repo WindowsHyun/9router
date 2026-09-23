@@ -159,9 +159,15 @@ try {
   const queued = BURST > LIMIT && slowest > soloMs * 1.5;
   console.log(`        slowest ${slowest}ms vs ${soloMs}ms alone `
     + `→ ${queued ? "QUEUED behind the gate" : "no queueing observed"}`);
-  check("the gate is what makes a burst slow, and it is raisable",
-    true,
-    "");
+
+  // The gate is supposed to bound how many interpreters run at once, not to
+  // serialize the burst. Waves of LIMIT, so the slowest should land inside a
+  // couple of spawns' worth of time — well short of BURST spawns end to end.
+  const waves = Math.ceil(BURST / LIMIT);
+  const budget = Math.max(soloMs * waves * 2, 30000);
+  check("queueing stays bounded — a burst costs waves, not one-at-a-time",
+    slowest < budget,
+    `slowest ${slowest}ms against a ${budget}ms budget (${waves} waves of ${LIMIT}, ${soloMs}ms alone)`);
 
   // A slot leak is the failure that would look like a permanent hang, so prove
   // the gate gave every slot back: after the burst, one more request must be
