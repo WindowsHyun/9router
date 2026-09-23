@@ -12,9 +12,7 @@ import {
 } from "open-sse/executors/claude-cli.js";
 import { getExecutor as getExecutorForGuard } from "open-sse/executors/index.js";
 import {
-  CLAUDE_CLI_INLINE_SYSTEM_PROMPT,
   CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
-  claudeCliArgvBudget,
   resolveClaudeCliMaxTurns,
   CLAUDE_CLI_DEFAULT_MAX_TURNS,
   CLAUDE_CLI_MAX_TURNS_LIMIT,
@@ -210,63 +208,56 @@ describe("claude-cli non-streaming conversion", () => {
   });
 });
 
-// Windows caps a command line at 32,767 chars — measured on claude 2.1.278, a
-// 30k --system-prompt works and 40k dies with ENAMETOOLONG. Coding agents send
-// system prompts in that range, so the oversized case must not reach argv.
-describe("claude-cli argv budget", () => {
-  const argvLength = (args) => args.join(" ").length;
+// Windows caps a command line at 32,767 chars, and a coding agent's system
+// prompt runs well past it — measured on claude 2.1.278, 30k on argv works and
+// 40k dies with ENAMETOOLONG. It used to be swapped for a stub and pasted into
+// the prompt at that size; it now goes to a file, so size stops mattering and
+// the caller's instructions arrive intact either way.
+describe("claude-cli system prompt", () => {
   const bigSystem = "S".repeat(40000);
 
-  // Without an explicit --system-prompt the CLI applies Claude Code's own agent
+  // Without an explicit system prompt the CLI applies Claude Code's own agent
   // prompt: measured 8,385 prompt tokens for a one-line request versus 429 with
   // one, plus a coding-agent persona an API caller never asked for.
-  it("always sends a system prompt, even when the request has no system message", () => {
+  it("always carries a system prompt, even when the request has no system message", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "user", content: "hi" }],
-      platform: "win32",
     });
-    const value = plan.args[plan.args.indexOf("--system-prompt") + 1];
-    expect(plan.args).toContain("--system-prompt");
-    expect(value).toBe(CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT);
-    expect(value.length).toBeGreaterThan(0);
+    expect(plan.system).toBe(CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT);
+    expect(plan.system.length).toBeGreaterThan(0);
   });
 
   it("prefers the caller's system message over the default", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "system", content: "Be terse." }, { role: "user", content: "hi" }],
-      platform: "win32",
     });
-    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
+    expect(plan.system).toBe("Be terse.");
   });
 
-  it("keeps a normal system prompt on argv for full fidelity", () => {
-    const plan = planClaudeCliInvocation({
-      model: "claude-cli-haiku",
-      messages: [{ role: "system", content: "Be terse." }, { role: "user", content: "hi" }],
-      platform: "win32",
-    });
-    expect(plan.inlinedSystem).toBe(false);
-    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
-    expect(plan.prompt).toBe("hi");
-  });
-
-  it("moves an oversized system prompt into stdin instead of argv", () => {
+  it("keeps an oversized system prompt off argv, whole", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "system", content: bigSystem }, { role: "user", content: "hi" }],
-      platform: "win32",
     });
-    expect(plan.inlinedSystem).toBe(true);
-    expect(argvLength(plan.args)).toBeLessThan(claudeCliArgvBudget("win32"));
+    // The executor writes this to a file and passes --system-prompt-file.
+    expect(plan.system).toBe(bigSystem);
     expect(plan.args).not.toContain(bigSystem);
-    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe(CLAUDE_CLI_INLINE_SYSTEM_PROMPT);
-    // The instructions still reach the model, and still replace Claude Code's default prompt.
-    expect(plan.prompt.startsWith(`[System]\n${bigSystem}`)).toBe(true);
-    expect(plan.prompt).toContain("[User]\nhi");
+    expect(plan.args).not.toContain("--system-prompt");
+    // ...and it is no longer smuggled into the turn either.
+    expect(plan.stdin).not.toContain(bigSystem);
   });
 
+  it("puts the system prompt on argv only when asked to directly", () => {
+    const args = buildClaudeCliArgs({ model: "claude-cli-haiku", system: "sys" });
+    expect(args[args.indexOf("--system-prompt") + 1]).toBe("sys");
+    const fromFile = buildClaudeCliArgs({ model: "claude-cli-haiku", systemPromptFile: "/tmp/system.md" });
+    expect(fromFile[fromFile.indexOf("--system-prompt-file") + 1]).toBe("/tmp/system.md");
+    expect(fromFile).not.toContain("--system-prompt");
+  });
+
+  
   it("identifies .cmd/.bat shims, which cannot be executed directly", () => {
     expect(isShimPath("C:/npm/claude.cmd", "win32")).toBe(true);
     expect(isShimPath("C:/npm/claude.bat", "win32")).toBe(true);

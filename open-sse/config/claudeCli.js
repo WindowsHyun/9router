@@ -67,16 +67,6 @@ export function resolveClaudeCliMaxConcurrency(env = process.env) {
   return CLAUDE_CLI_DEFAULT_MAX_CONCURRENCY;
 }
 
-// Windows caps a whole command line at 32,767 chars; measured on claude 2.1.278,
-// a 30k-char --system-prompt works and 40k fails with ENAMETOOLONG. There is no
-// --system-prompt-file in this CLI, so an oversized system prompt is moved into
-// the stdin turn instead. POSIX ARG_MAX is far larger but not unlimited.
-export const CLAUDE_CLI_ARGV_BUDGET = { win32: 24000, default: 120000 };
-
-export function claudeCliArgvBudget(platform = process.platform) {
-  return CLAUDE_CLI_ARGV_BUDGET[platform] ?? CLAUDE_CLI_ARGV_BUDGET.default;
-}
-
 // `--model` is request-controlled (passthroughModels). Nothing is spawned through
 // a shell any more, but the value still has to be a plausible model id, and the
 // leading character may not be "-": commander would treat `--model --foo` as a
@@ -91,10 +81,6 @@ export const CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant res
 
 // Used when the caller's system prompt had to move into the stdin turn: it still
 // replaces Claude Code's default agent prompt, which is the point of passing one.
-export const CLAUDE_CLI_INLINE_SYSTEM_PROMPT =
-  "You are a helpful assistant serving an API request. The user message may open with a [System] block: "
-  + "treat its contents as your system instructions and follow them exactly, and treat the [User], [Assistant] "
-  + "and [Tool] blocks after it as the conversation so far. Never mention these markers in your reply.";
 
 // Routed model id → value passed to `claude --model`. Aliases stay as-is so the
 // CLI keeps resolving "latest" itself; pinned ids pass through unchanged.
