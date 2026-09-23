@@ -13,6 +13,8 @@ import {
 import { getExecutor as getExecutorForGuard } from "open-sse/executors/index.js";
 import {
   CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
+  CLAUDE_CLI_INLINE_SYSTEM_PROMPT,
+  claudeCliArgvBudget,
   resolveClaudeCliMaxTurns,
   CLAUDE_CLI_DEFAULT_MAX_TURNS,
   CLAUDE_CLI_MAX_TURNS_LIMIT,
@@ -208,53 +210,75 @@ describe("claude-cli non-streaming conversion", () => {
   });
 });
 
-// Windows caps a command line at 32,767 chars, and a coding agent's system
-// prompt runs well past it — measured on claude 2.1.278, 30k on argv works and
-// 40k dies with ENAMETOOLONG. It used to be swapped for a stub and pasted into
-// the prompt at that size; it now goes to a file, so size stops mattering and
-// the caller's instructions arrive intact either way.
+// Windows caps a command line at 32,767 chars — measured on claude 2.1.278, a
+// 30k --system-prompt works and 40k dies with ENAMETOOLONG. Coding agents send
+// system prompts in that range, so the oversized case must not reach argv.
+//
+// `--system-prompt-file` is not the way out: the binary accepts it, but measured
+// on 2.1.280 the same text delivered that way is not treated as authoritative
+// instruction — with an inline prompt the model complied, with the file it
+// called the content an injection attempt and refused. So an oversized prompt
+// goes into the conversation, and argv carries a stub that points at it.
 describe("claude-cli system prompt", () => {
+  const NL = String.fromCharCode(10);
+  const argvLength = (args) => args.join(" ").length;
   const bigSystem = "S".repeat(40000);
 
-  // Without an explicit system prompt the CLI applies Claude Code's own agent
+  // Without an explicit --system-prompt the CLI applies Claude Code's own agent
   // prompt: measured 8,385 prompt tokens for a one-line request versus 429 with
   // one, plus a coding-agent persona an API caller never asked for.
-  it("always carries a system prompt, even when the request has no system message", () => {
+  it("always sends a system prompt, even when the request has no system message", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "user", content: "hi" }],
+      platform: "win32",
     });
-    expect(plan.system).toBe(CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT);
-    expect(plan.system.length).toBeGreaterThan(0);
+    expect(plan.args).toContain("--system-prompt");
+    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe(CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT);
   });
 
   it("prefers the caller's system message over the default", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "system", content: "Be terse." }, { role: "user", content: "hi" }],
+      platform: "win32",
     });
-    expect(plan.system).toBe("Be terse.");
+    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
   });
 
-  it("keeps an oversized system prompt off argv, whole", () => {
+  it("keeps a normal system prompt on argv, where it is authoritative", () => {
+    const plan = planClaudeCliInvocation({
+      model: "claude-cli-haiku",
+      messages: [{ role: "system", content: "Be terse." }, { role: "user", content: "hi" }],
+      platform: "win32",
+    });
+    expect(plan.inlinedSystem).toBe(false);
+    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
+  });
+
+  it("never puts the system prompt in a file, which the model does not trust", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "system", content: bigSystem }, { role: "user", content: "hi" }],
+      platform: "win32",
     });
-    // The executor writes this to a file and passes --system-prompt-file.
-    expect(plan.system).toBe(bigSystem);
-    expect(plan.args).not.toContain(bigSystem);
-    expect(plan.args).not.toContain("--system-prompt");
-    // ...and it is no longer smuggled into the turn either.
-    expect(plan.stdin).not.toContain(bigSystem);
+    expect(plan.args).not.toContain("--system-prompt-file");
   });
 
-  it("puts the system prompt on argv only when asked to directly", () => {
-    const args = buildClaudeCliArgs({ model: "claude-cli-haiku", system: "sys" });
-    expect(args[args.indexOf("--system-prompt") + 1]).toBe("sys");
-    const fromFile = buildClaudeCliArgs({ model: "claude-cli-haiku", systemPromptFile: "/tmp/system.md" });
-    expect(fromFile[fromFile.indexOf("--system-prompt-file") + 1]).toBe("/tmp/system.md");
-    expect(fromFile).not.toContain("--system-prompt");
+  it("moves an oversized system prompt into the first turn instead of argv", () => {
+    const plan = planClaudeCliInvocation({
+      model: "claude-cli-haiku",
+      messages: [{ role: "system", content: bigSystem }, { role: "user", content: "hi" }],
+      platform: "win32",
+    });
+    expect(plan.inlinedSystem).toBe(true);
+    expect(argvLength(plan.args)).toBeLessThan(claudeCliArgvBudget("win32"));
+    expect(plan.args).not.toContain(bigSystem);
+    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe(CLAUDE_CLI_INLINE_SYSTEM_PROMPT);
+    // The instructions still reach the model, in the turn the stub points at.
+    const first = JSON.parse(plan.stdin.split(NL)[0]);
+    expect(first.message.content[0].text.startsWith("[System]" + NL + bigSystem)).toBe(true);
+    expect(first.message.content[1]).toEqual({ type: "text", text: "hi" });
   });
 
   

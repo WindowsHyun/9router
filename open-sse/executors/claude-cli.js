@@ -42,11 +42,13 @@ import {
   CLAUDE_CLI_BASE_URL,
   CLAUDE_CLI_DEFAULT_MAX_TURNS,
   CLAUDE_CLI_IDLE_TIMEOUT_MS,
+  CLAUDE_CLI_INLINE_SYSTEM_PROMPT,
   CLAUDE_CLI_MCP_TOOL_PREFIX,
   CLAUDE_CLI_MODEL_PATTERN,
   CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
   CLAUDE_CLI_ENV_ALLOWLIST,
   CLAUDE_CLI_QUEUE_TIMEOUT_MS,
+  claudeCliArgvBudget,
   CLAUDE_CLI_UPSTREAM_MODELS,
   resolveClaudeCliMaxConcurrency,
   resolveClaudeCliMaxTurns,
@@ -58,7 +60,7 @@ import {
   mcpConfigDocument,
   toMcpManifest,
 } from "./claudeCliTools.js";
-import { buildReplayFrames, framesToStdin } from "./claudeCliReplay.js";
+import { buildReplayFrames, framesToStdin, inlineSystemIntoFrames } from "./claudeCliReplay.js";
 
 // ─── Binary discovery ────────────────────────────────────────────────────────
 
@@ -161,6 +163,8 @@ export function buildSpawnPlan(bin, args) {
   return { command: process.execPath, args: [target, ...args], options: {} };
 }
 
+const NEWLINE = String.fromCharCode(10);
+
 // ─── Request shaping ─────────────────────────────────────────────────────────
 
 function blockText(part) {
@@ -240,8 +244,10 @@ export function buildClaudeCliPrompt(messages) {
  * (Nothing is ever spawned through a shell, so argv itself is not an injection
  * surface — see buildSpawnPlan.)
  */
-export function planClaudeCliInvocation({ model, messages, maxTurns, tools }) {
-  const { system, prompt } = buildClaudeCliPrompt(messages);
+export function planClaudeCliInvocation({
+  model, messages, platform = process.platform, maxTurns, tools,
+}) {
+  const { system, prompt, turnsText } = buildClaudeCliPrompt(messages);
   // Advertised to the CLI through MCP, never executed here — see
   // claudeCliTools.js. It leaves the plan as data so the spawn can write it to
   // a file, which keeps this function a pure function of the request.
@@ -252,20 +258,33 @@ export function planClaudeCliInvocation({ model, messages, maxTurns, tools }) {
   // refusal, and answer with an apology — losing the tool call the client was
   // waiting for. Without tools the caller's own limit still applies.
   const turnLimit = manifest.length ? 1 : maxTurns;
+  const budget = claudeCliArgvBudget(platform);
 
   // Replay the conversation as turns when it can be: the model then has had the
   // conversation rather than reading a transcript of one, and a tool result is
   // a result linked to the call that produced it instead of a line of prose.
   const replay = buildReplayFrames(messages, CLAUDE_CLI_MCP_TOOL_PREFIX);
   if (replay.frames) {
+    const inlineSystem = Boolean(replay.system) && replay.system.length > budget;
+    const frames = inlineSystem
+      ? inlineSystemIntoFrames(replay.frames, replay.system)
+      : replay.frames;
     return {
-      args: buildClaudeCliArgs({ model, maxTurns: turnLimit, streamJsonInput: true }),
-      stdin: framesToStdin(replay.frames),
-      // Never empty: without a system prompt Claude Code applies its own agent
-      // prompt, which is neither what an API caller asked for nor what they
-      // expect to pay for.
-      system: replay.system || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
-      frameCount: replay.frames.length,
+      args: buildClaudeCliArgs({
+        model,
+        // Never empty: without a system prompt Claude Code applies its own
+        // agent prompt, which is neither what an API caller asked for nor what
+        // they expect to pay for.
+        system: inlineSystem
+          ? CLAUDE_CLI_INLINE_SYSTEM_PROMPT
+          : (replay.system || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT),
+        maxTurns: turnLimit,
+        streamJsonInput: true,
+      }),
+      stdin: framesToStdin(frames),
+      inlinedSystem: inlineSystem,
+      systemChars: replay.system.length,
+      frameCount: frames.length,
       replayed: true,
       manifest,
     };
@@ -273,10 +292,29 @@ export function planClaudeCliInvocation({ model, messages, maxTurns, tools }) {
 
   // Ends on an assistant turn, so there is no frame to query with. The whole
   // conversation goes in as one prompt, the way it always did.
+  const inlineSystem = Boolean(system) && system.length + prompt.length > budget;
+  if (!inlineSystem) {
+    return {
+      args: buildClaudeCliArgs({
+        model,
+        system: system || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
+        maxTurns: turnLimit,
+      }),
+      stdin: prompt,
+      inlinedSystem: false,
+      frameCount: 0,
+      replayed: false,
+      manifest,
+    };
+  }
+
   return {
-    args: buildClaudeCliArgs({ model, maxTurns: turnLimit }),
-    stdin: prompt,
-    system: system || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
+    args: buildClaudeCliArgs({
+      model, system: CLAUDE_CLI_INLINE_SYSTEM_PROMPT, maxTurns: turnLimit,
+    }),
+    stdin: `[System]` + NEWLINE + system + NEWLINE + NEWLINE + turnsText,
+    inlinedSystem: true,
+    systemChars: system.length,
     frameCount: 0,
     replayed: false,
     manifest,
@@ -292,7 +330,7 @@ export function resolveClaudeCliModel(model) {
 }
 
 export function buildClaudeCliArgs({
-  model, system, systemPromptFile, maxTurns, mcpConfigFile, streamJsonInput,
+  model, system, maxTurns, mcpConfigFile, streamJsonInput,
 } = {}) {
   const args = [
     "-p",
@@ -317,10 +355,9 @@ export function buildClaudeCliArgs({
   if (streamJsonInput) args.push("--input-format", "stream-json");
   const upstreamModel = resolveClaudeCliModel(model);
   if (upstreamModel) args.push("--model", upstreamModel);
-  // From a file by preference: a coding agent's system prompt runs to tens of
-  // thousands of characters, and Windows caps a whole command line at 32,767.
-  if (systemPromptFile) args.push("--system-prompt-file", systemPromptFile);
-  else if (system) args.push("--system-prompt", system);
+  // Always on argv. `--system-prompt-file` exists but is not equivalent: the
+  // same text delivered that way is not treated as authoritative instruction.
+  if (system) args.push("--system-prompt", system);
   // The caller's tools, behind the inert MCP server. Omitted entirely when the
   // request has none, so a plain chat spawns no extra process.
   if (mcpConfigFile) args.push("--mcp-config", mcpConfigFile);
@@ -517,16 +554,12 @@ export function translateClaudeCliEvent(event, ctx) {
  * — the caller then puts the system prompt back on argv rather than dropping
  * it.
  */
-function writeRequestFiles({ manifest, system }) {
-  if (!manifest?.length && !system) return null;
+function writeRequestFiles({ manifest }) {
+  if (!manifest?.length) return null;
   try {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "9router-claude-req-"));
     const files = { dir };
-    if (system) {
-      files.systemPath = path.join(dir, "system.md");
-      fs.writeFileSync(files.systemPath, system);
-    }
-    if (manifest?.length) {
+    {
       // .cjs so the extension decides the module kind: a temp directory has no
       // package.json to consult, and the generated program is a plain script.
       const serverPath = path.join(dir, "inert-mcp.cjs");
@@ -632,8 +665,18 @@ export class ClaudeCliExecutor extends BaseExecutor {
       "CLAUDE-CLI",
       `claude -p → model=${model}, bin=${bin}, stdinChars=${stdin.length}`
         + (invocation.manifest.length ? `, tools=${invocation.manifest.length}` : "")
-        + (invocation.replayed ? `, replayed ${invocation.frameCount} turns` : ", flattened prompt"),
+        + (invocation.replayed ? `, replayed ${invocation.frameCount} turns` : ", flattened prompt")
     );
+    if (invocation.inlinedSystem) {
+      // Worth saying plainly: measured on 2.1.280, a system prompt delivered
+      // inside the conversation is recognised as one and declined — the model
+      // called it an injection attempt. The caller's instructions reach the
+      // model but may not be followed. argv is the only authoritative channel,
+      // and this prompt does not fit in it.
+      log?.info?.("CLAUDE-CLI",
+        `system prompt (${invocation.systemChars} chars) exceeds the argv budget and `
+        + "was moved into the conversation; the model may not treat it as authoritative");
+    }
 
     // Wait for a spawn slot before opening the stream, so a burst queues instead
     // of starting N interpreters at once.
@@ -674,13 +717,9 @@ export class ClaudeCliExecutor extends BaseExecutor {
         if (timer.unref) timer.unref();
       }
     };
-    // The system prompt goes on argv only when the file could not be written;
-    // dropping it would hand the caller Claude Code's own agent prompt.
-    const extraArgs = [];
-    if (requestFiles?.systemPath) extraArgs.push("--system-prompt-file", requestFiles.systemPath);
-    else if (invocation.system) extraArgs.push("--system-prompt", invocation.system);
-    if (requestFiles?.configPath) extraArgs.push("--mcp-config", requestFiles.configPath);
-    const plan = extraArgs.length ? buildSpawnPlan(bin, [...invocation.args, ...extraArgs]) : basePlan;
+    const plan = requestFiles
+      ? buildSpawnPlan(bin, [...invocation.args, "--mcp-config", requestFiles.configPath])
+      : basePlan;
 
     const ctx = createClaudeCliContext({
       id: `chatcmpl-${Date.now().toString(36)}`,
@@ -866,6 +905,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
         bin,
         stdinChars: stdin.length,
         replayedTurns: invocation.replayed ? invocation.frameCount : 0,
+        inlinedSystem: invocation.inlinedSystem,
       },
     };
   }

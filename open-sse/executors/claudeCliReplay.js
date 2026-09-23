@@ -151,3 +151,28 @@ export function buildReplayFrames(messages, toolPrefix) {
 export function framesToStdin(frames) {
   return `${frames.map((frame) => JSON.stringify(frame)).join("\n")}\n`;
 }
+
+/**
+ * Fold a system prompt too large for argv into the conversation itself.
+ *
+ * Windows caps a command line at 32,767 characters and a coding agent's system
+ * prompt runs past it. `--system-prompt-file` is accepted by the binary but is
+ * not equivalent — the same text delivered that way is not treated as
+ * authoritative instruction — so the text goes into the first turn, marked, and
+ * argv carries a stub telling the model to read it as its instructions.
+ */
+export function inlineSystemIntoFrames(frames, system) {
+  if (!frames?.length || !system) return frames;
+  const [first, ...rest] = frames;
+  return [
+    {
+      ...first,
+      message: {
+        ...first.message,
+        content: [{ type: "text", text: `[System]
+${system}` }, ...first.message.content],
+      },
+    },
+    ...rest,
+  ];
+}
