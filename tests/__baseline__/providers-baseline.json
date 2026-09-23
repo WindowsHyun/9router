@@ -1085,5 +1085,10 @@
       "preserveCacheControl": true
     },
     "format": "openai"
+  },
+  "claude-cli": {
+    "baseUrl": "claude-cli://stdio",
+    "format": "openai",
+    "forceStream": true
   }
 }
