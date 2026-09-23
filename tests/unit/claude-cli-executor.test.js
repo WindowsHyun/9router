@@ -12,8 +12,8 @@ import {
 } from "open-sse/executors/claude-cli.js";
 import { getExecutor as getExecutorForGuard } from "open-sse/executors/index.js";
 import {
-  CLAUDE_CLI_INLINE_SYSTEM_PROMPT,
   CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
+  CLAUDE_CLI_INLINE_SYSTEM_PROMPT,
   claudeCliArgvBudget,
   resolveClaudeCliMaxTurns,
   CLAUDE_CLI_DEFAULT_MAX_TURNS,
@@ -213,7 +213,14 @@ describe("claude-cli non-streaming conversion", () => {
 // Windows caps a command line at 32,767 chars — measured on claude 2.1.278, a
 // 30k --system-prompt works and 40k dies with ENAMETOOLONG. Coding agents send
 // system prompts in that range, so the oversized case must not reach argv.
-describe("claude-cli argv budget", () => {
+//
+// `--system-prompt-file` is not the way out: the binary accepts it, but measured
+// on 2.1.280 the same text delivered that way is not treated as authoritative
+// instruction — with an inline prompt the model complied, with the file it
+// called the content an injection attempt and refused. So an oversized prompt
+// goes into the conversation, and argv carries a stub that points at it.
+describe("claude-cli system prompt", () => {
+  const NL = String.fromCharCode(10);
   const argvLength = (args) => args.join(" ").length;
   const bigSystem = "S".repeat(40000);
 
@@ -226,10 +233,8 @@ describe("claude-cli argv budget", () => {
       messages: [{ role: "user", content: "hi" }],
       platform: "win32",
     });
-    const value = plan.args[plan.args.indexOf("--system-prompt") + 1];
     expect(plan.args).toContain("--system-prompt");
-    expect(value).toBe(CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT);
-    expect(value.length).toBeGreaterThan(0);
+    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe(CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT);
   });
 
   it("prefers the caller's system message over the default", () => {
@@ -241,7 +246,7 @@ describe("claude-cli argv budget", () => {
     expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
   });
 
-  it("keeps a normal system prompt on argv for full fidelity", () => {
+  it("keeps a normal system prompt on argv, where it is authoritative", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "system", content: "Be terse." }, { role: "user", content: "hi" }],
@@ -249,10 +254,18 @@ describe("claude-cli argv budget", () => {
     });
     expect(plan.inlinedSystem).toBe(false);
     expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
-    expect(plan.prompt).toBe("hi");
   });
 
-  it("moves an oversized system prompt into stdin instead of argv", () => {
+  it("never puts the system prompt in a file, which the model does not trust", () => {
+    const plan = planClaudeCliInvocation({
+      model: "claude-cli-haiku",
+      messages: [{ role: "system", content: bigSystem }, { role: "user", content: "hi" }],
+      platform: "win32",
+    });
+    expect(plan.args).not.toContain("--system-prompt-file");
+  });
+
+  it("moves an oversized system prompt into the first turn instead of argv", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "system", content: bigSystem }, { role: "user", content: "hi" }],
@@ -262,11 +275,13 @@ describe("claude-cli argv budget", () => {
     expect(argvLength(plan.args)).toBeLessThan(claudeCliArgvBudget("win32"));
     expect(plan.args).not.toContain(bigSystem);
     expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe(CLAUDE_CLI_INLINE_SYSTEM_PROMPT);
-    // The instructions still reach the model, and still replace Claude Code's default prompt.
-    expect(plan.prompt.startsWith(`[System]\n${bigSystem}`)).toBe(true);
-    expect(plan.prompt).toContain("[User]\nhi");
+    // The instructions still reach the model, in the turn the stub points at.
+    const first = JSON.parse(plan.stdin.split(NL)[0]);
+    expect(first.message.content[0].text.startsWith("[System]" + NL + bigSystem)).toBe(true);
+    expect(first.message.content[1]).toEqual({ type: "text", text: "hi" });
   });
 
+  
   it("identifies .cmd/.bat shims, which cannot be executed directly", () => {
     expect(isShimPath("C:/npm/claude.cmd", "win32")).toBe(true);
     expect(isShimPath("C:/npm/claude.bat", "win32")).toBe(true);

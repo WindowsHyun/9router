@@ -12,10 +12,13 @@ const { getRoutedUsage } = await import("@/shared/services/routedUsage");
 beforeEach(() => { rows.length = 0; });
 
 /**
- * claude-cli bills against a subscription this server cannot query:
- * `claude -p --output-format json` reports the cost of the call it just made
- * but no window remaining and no reset. So the figures are 9Router's own, and
- * the contract that matters is that they never masquerade as a limit.
+ * The fallback for a connection whose quota cannot be read from upstream.
+ *
+ * claude-cli normally reports its real subscription windows (claudeCliUsage.js
+ * reads the same endpoint the claude provider does). What lands here is an
+ * account with no credential to ask with — an expired local token, or a login
+ * that never completed. The figures are then 9Router's own, and the contract
+ * that matters is that they never masquerade as a limit.
  */
 describe("routed usage", () => {
   it("counts the requests it routed for that connection", async () => {

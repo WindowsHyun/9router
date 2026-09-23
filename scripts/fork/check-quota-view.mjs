@@ -201,6 +201,23 @@ try {
     /routed 24h|routed 5h|routed 7d/.test(flat),
     "the figures were replaced by the message instead of sitting under it");
 
+  // The figures were present and still rendered wrong: a no-limit row has no
+  // `remaining`, the colour helper read that missing value as 0%, and a
+  // perfectly healthy counter was painted red and marked as depleted — with
+  // "Unlimited" printed twice on the row, once beside the count and again in
+  // the column that exists to say it. Counting markers, rather than looking
+  // for a red dot anywhere on the page, keeps this honest when a real
+  // account's quota is genuinely low.
+  const unlimitedCount = (flat.match(/Unlimited/g) || []).length;
+  const infinityCount = (flat.match(/∞/g) || []).length;
+  const usedCount = (flat.match(/ used/g) || []).length;
+  check("a no-limit row is marked neutral, not as exhausted",
+    unlimitedCount > 0 && infinityCount === unlimitedCount,
+    `${infinityCount} neutral markers for ${unlimitedCount} no-limit rows`);
+  check("...and says Unlimited once per row, not twice",
+    unlimitedCount === usedCount,
+    `${unlimitedCount} "Unlimited" across ${usedCount} rows`);
+
   // Attribute reads are not auto-waited the way actions are, so poll rather
   // than racing React's re-render.
   const untilAttr = async (locator, attr, value, ms = 15000) => {
@@ -225,13 +242,13 @@ try {
   check("a provider card with an account picker is drawn", true);
 
   const optionCount = await picker.locator("option").count();
-  check("the picker lists both accounts of that provider", optionCount === 2,
-    `options=${optionCount}`);
+  check("the picker lists every account of that provider", optionCount === ACCOUNTS,
+    `options=${optionCount} expected=${ACCOUNTS}`);
 
   // One card per provider is the whole point — not one per account.
   const cardCount = await page.locator('select[aria-label^="Account for"]').count();
   check("one card per provider, not one per account", cardCount === 1,
-    `cards=${cardCount} for 2 accounts of 1 provider`);
+    `cards=${cardCount} for ${ACCOUNTS} accounts of 1 provider`);
 
   // Picking the other account must actually change the selection.
   const values = await picker.locator("option").evaluateAll((os_) => os_.map((o) => o.value));
