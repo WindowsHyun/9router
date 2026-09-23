@@ -2,6 +2,14 @@
 export const CLAUDE_CLI_BASE_URL = "claude-cli://stdio";
 
 // One turn per request: this is an inference endpoint, not an agent loop.
+// The caller's tools reach Claude Code through an MCP server, because MCP is
+// the only surface that takes arbitrary tool schemas — `--tools` selects from
+// the CLI's own built-in set. The CLI namespaces every MCP tool it exposes as
+// `mcp__<server>__<tool>`, so this name is also what has to be stripped back
+// off before a proposed call is handed to the client that asked for it.
+export const CLAUDE_CLI_MCP_SERVER = "ninerouter";
+export const CLAUDE_CLI_MCP_TOOL_PREFIX = `mcp__${CLAUDE_CLI_MCP_SERVER}__`;
+
 export const CLAUDE_CLI_DEFAULT_MAX_TURNS = 1;
 export const CLAUDE_CLI_MAX_TURNS_LIMIT = 10;
 
