@@ -1,20 +1,36 @@
 /**
- * Routed usage, end to end, with a real request.
+ * Claude Code CLI quota, live, against a real subscription.
  *
- *   node scripts/fork/check-routed-usage-live.mjs
+ *   node scripts/fork/check-claude-cli-quota-live.mjs
  *
- * The quota tracker's figures for claude-cli are counted from what this server
- * routed. Every earlier check proved a piece of that — the API shape, the
- * parser, the card — and the numbers were still reported as not showing up.
- * None of them ever put a request through and then looked at the figure.
+ * The complaint this exists for: every other provider's card shows a bar, a
+ * percentage and a reset countdown, and claude-cli showed none of them. It was
+ * being served counters this server had tallied itself, because its connections
+ * carry authType "none" and that was read as "no upstream quota".
  *
- * This does: adopt the host's Claude Code login as an account, send one real
- * `/v1/chat/completions` through it, then read /api/usage/<id> back and require
- * the routed counters to be non-zero and to carry tokens.
+ * It has one. claude-cli holds an ordinary Claude subscription, and the same
+ * OAuth usage endpoint the `claude` provider reads answers for it. So the thing
+ * worth asserting is parity: /api/usage/<id> must come back with the real
+ * `session (5h)` / `weekly (7d)` windows, each with a percentage and a reset
+ * that parses — not with routed counters.
  *
- * It therefore spends one small Claude request on whatever account this machine
- * is logged into. It skips instead of failing when `claude` is missing or not
- * signed in, so it stays runnable on a machine that cannot do that.
+ * Both paths are checked, because the fallback still has to work:
+ *   - the host's own Claude Code login  -> real windows;
+ *   - an account with a bogus token     -> routed counters, not an error page.
+ *
+ * It also sends one real `/v1/chat/completions` through the CLI, so "the
+ * account works" is proven rather than assumed. That spends one small Claude
+ * request on whatever account this machine is logged into.
+ *
+ * Skips instead of failing when `claude` is missing or not signed in.
+ *
+ * NOTE on TLS: where outbound HTTPS is intercepted (a corporate proxy with a
+ * self-signed root), the upstream usage call fails and the server correctly
+ * falls back to routed counters — which this check then reports as a FAIL,
+ * because it cannot tell that apart from the bug. Run it as
+ * `NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/fork/check-claude-cli-quota-live.mjs`
+ * on such a machine. Set it in the shell that launches the check and nowhere
+ * else — never in the app, the Dockerfile, or a default.
  *
  * Needs port 21999 free.
  */
@@ -28,8 +44,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = process.env.ROUTER_ROOT
   || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PORT = 21999;
-const PASSWORD = "routed-usage-live-password";
-const DATA_DIR = path.join(os.tmpdir(), `9r-routed-usage-${Date.now()}`);
+const PASSWORD = "claude-cli-quota-live-password";
+const DATA_DIR = path.join(os.tmpdir(), `9r-claude-cli-quota-${Date.now()}`);
 
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -63,6 +79,14 @@ const waitFor = async (fn, ms, label) => {
   throw new Error(`timed out waiting for ${label} (${last})`);
 };
 
+/** A window is only useful to the card if it can draw a bar and a countdown. */
+const isRenderableWindow = (q) => Boolean(q)
+  && q.unlimited === false
+  && Number.isFinite(Number(q.used))
+  && Number.isFinite(Number(q.remaining))
+  && Number(q.remaining) >= 0 && Number(q.remaining) <= 100
+  && Number.isFinite(new Date(q.resetAt).getTime());
+
 let server;
 let log = "";
 try {
@@ -94,10 +118,10 @@ try {
   const json = { cookie, "content-type": "application/json" };
 
   // Needs a real, signed-in Claude Code on this machine — a fabricated token
-  // would fail the request and prove nothing about the counters.
+  // proves only the fallback, which is checked separately at the end.
   const accounts = await call({ method: "GET", path: "/api/cli-tools/claude-cli-accounts", headers: { cookie } });
   if (!accounts.json?.installed || !accounts.json?.host?.signedIn) {
-    console.log("  SKIP  routed usage (needs Claude Code installed and signed in on this machine)");
+    console.log("  SKIP  claude-cli quota (needs Claude Code installed and signed in on this machine)");
     process.exit(0);
   }
 
@@ -108,26 +132,42 @@ try {
     `status=${adopted.status} body=${adopted.body.slice(0, 200)}`);
   if (!id) throw new Error("cannot continue without an account");
 
-  // Before: nothing routed yet, so every window must read zero rather than
-  // being absent — an absent figure is what "no quota shows up" looks like.
-  const before = await call({ method: "GET", path: `/api/usage/${encodeURIComponent(id)}`, headers: { cookie } });
-  const beforeQuotas = before.json?.quotas || {};
-  check("usage reports routed windows before any traffic",
-    Object.keys(beforeQuotas).length >= 2,
-    `quotas=${JSON.stringify(Object.keys(beforeQuotas))}`);
-  check("...and they start at zero",
-    beforeQuotas["routed 24h · requests"]?.used === 0,
-    `requests=${JSON.stringify(beforeQuotas["routed 24h · requests"])}`);
+  // The assertion the user's complaint maps to: real windows, not counters.
+  const usage = await call({ method: "GET", path: `/api/usage/${encodeURIComponent(id)}`, headers: { cookie } });
+  const quotas = usage.json?.quotas || {};
+  const keys = Object.keys(quotas);
+  const shape = (k) => `${k}=${JSON.stringify(quotas[k])}`;
 
-  // /v1/* authenticates with an API key, not the dashboard session.
+  check("usage returns the real subscription windows, not routed counters",
+    keys.includes("session (5h)") && keys.includes("weekly (7d)"),
+    `quotas=${JSON.stringify(keys)} message=${usage.json?.message || ""}`);
+
+  check("the 5h window can draw a bar, a percentage and a reset",
+    isRenderableWindow(quotas["session (5h)"]), shape("session (5h)"));
+
+  check("the 7d window can draw a bar, a percentage and a reset",
+    isRenderableWindow(quotas["weekly (7d)"]), shape("weekly (7d)"));
+
+  check("...and the reset times are in the future, so a countdown reads forward",
+    ["session (5h)", "weekly (7d)"].every((k) => new Date(quotas[k]?.resetAt).getTime() > Date.now()),
+    ["session (5h)", "weekly (7d)"].map(shape).join(" "));
+
+  check("nothing is left flagged unlimited on this account",
+    Object.values(quotas).every((q) => q.unlimited !== true),
+    JSON.stringify(quotas).slice(0, 200));
+
+  check("the plan is reported, the way the claude card reports it",
+    typeof usage.json?.plan === "string" && usage.json.plan.length > 0,
+    `plan=${JSON.stringify(usage.json?.plan)}`);
+
+  // Proves the adopted account is genuinely usable, not just readable.
   const keyRes = await call({ method: "POST", path: "/api/keys", headers: json },
-    JSON.stringify({ name: "routed-usage-live-check" }));
+    JSON.stringify({ name: "claude-cli-quota-live-check" }));
   const apiKey = keyRes.json?.apiKey?.key || keyRes.json?.key || keyRes.json?.apiKey;
   check("an API key can be minted for the routed request",
     typeof apiKey === "string" && apiKey.length > 0,
     `status=${keyRes.status} body=${keyRes.body.slice(0, 200)}`);
 
-  // One real routed request through the CLI.
   const completion = await call({
     method: "POST",
     path: "/v1/chat/completions",
@@ -137,32 +177,35 @@ try {
     messages: [{ role: "user", content: "Reply with the single word: ok" }],
     stream: false,
   }));
-  check("a real request routes through the Claude Code CLI",
+  check("a real request still routes through the Claude Code CLI",
     completion.status === 200 && Boolean(completion.json?.choices?.length),
     `status=${completion.status} body=${completion.body.slice(0, 300)}`);
 
-  // Usage is written after the response completes, so give it a moment.
-  let afterQuotas = {};
-  try {
-    await waitFor(async () => {
-      const after = await call({ method: "GET", path: `/api/usage/${encodeURIComponent(id)}?force=1`, headers: { cookie } });
-      afterQuotas = after.json?.quotas || {};
-      return (afterQuotas["routed 24h · requests"]?.used || 0) > 0;
-    }, 30000, "the routed request counter to move");
-  } catch { /* asserted below */ }
+  // force=1 is what Recheck sends; it must bypass the 5-minute usage cache
+  // and still come back with real windows rather than a soft failure.
+  const forced = await call({ method: "GET", path: `/api/usage/${encodeURIComponent(id)}?force=1`, headers: { cookie } });
+  check("a forced recheck returns real windows too",
+    isRenderableWindow(forced.json?.quotas?.["session (5h)"]),
+    `body=${forced.body.slice(0, 200)}`);
 
-  check("the routed request counter moves after that request",
-    (afterQuotas["routed 24h · requests"]?.used || 0) >= 1,
-    `after=${JSON.stringify(afterQuotas["routed 24h · requests"])}`);
-  check("...and tokens are counted, not just the request",
-    (afterQuotas["routed 24h · tokens"]?.used || 0) > 0,
-    `tokens=${JSON.stringify(afterQuotas["routed 24h · tokens"])}`);
-  check("the 5h window sees it too",
-    (afterQuotas["routed 5h · requests"]?.used || 0) >= 1,
-    `5h=${JSON.stringify(afterQuotas["routed 5h · requests"])}`);
-  check("every figure is still flagged unlimited, with no invented reset",
-    Object.values(afterQuotas).every((q) => q.unlimited === true && q.resetAt === null),
-    JSON.stringify(afterQuotas).slice(0, 200));
+  // The fallback still has to hold: an account whose credential upstream will
+  // not accept must degrade to routed counters, not to an error on the card.
+  const bogus = await call({ method: "POST", path: "/api/cli-tools/claude-cli-accounts", headers: json },
+    JSON.stringify({ oauthToken: "sk-ant-oat01-not-a-real-token", name: "Fallback account" }));
+  const bogusId = bogus.json?.account?.id;
+  if (bogusId) {
+    const fb = await call({ method: "GET", path: `/api/usage/${encodeURIComponent(bogusId)}`, headers: { cookie } });
+    const fbQuotas = fb.json?.quotas || {};
+    check("an account upstream rejects falls back to routed counters",
+      Object.keys(fbQuotas).some((k) => k.startsWith("routed ")),
+      `status=${fb.status} quotas=${JSON.stringify(Object.keys(fbQuotas))}`);
+    check("...and those counters are flagged unlimited, inventing no reset",
+      Object.values(fbQuotas).length > 0
+        && Object.values(fbQuotas).every((q) => q.unlimited === true && q.resetAt === null),
+      JSON.stringify(fbQuotas).slice(0, 200));
+  } else {
+    check("a fallback account could be created", false, `body=${bogus.body.slice(0, 200)}`);
+  }
 } catch (e) {
   check("harness completed", false, e.message);
 } finally {
