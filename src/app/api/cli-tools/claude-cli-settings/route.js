@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { exec, execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
+import fsSync from "fs";
 import { resolveClaudeBin } from "open-sse/executors/claude-cli.js";
 import { CLAUDE_CLI_NESTED_ENV_KEYS } from "open-sse/config/claudeCli.js";
 
@@ -13,6 +14,21 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 const VERSION_TIMEOUT_MS = 10000;
+
+// Mirrors dashboardGuard's detection. An in-container update cannot be made
+// durable — it lands in the writable layer and the next restart drops back to
+// the image — so the card needs to know before the button is pressed, not
+// after a failed install.
+const IS_CONTAINER = (() => {
+  if (process.env.NINEROUTER_HOST_ROUTES_REMOTE === "1") return true;
+  if (process.env.NINEROUTER_HOST_ROUTES_REMOTE === "0") return false;
+  if (process.env.KUBERNETES_SERVICE_HOST) return true;
+  try {
+    return fsSync.existsSync("/.dockerenv");
+  } catch {
+    return false;
+  }
+})();
 // `claude update` downloads a build, so it needs far longer than a version
 // probe — but still a bound, or a hung download holds the request open.
 const UPDATE_TIMEOUT_MS = 300000;
@@ -84,6 +100,8 @@ export async function GET() {
     // A version probe never touches the account, so this cannot confirm login;
     // the first routed request surfaces an auth problem as a stream error.
     authHint: version ? null : "Binary found but `claude --version` failed — check the install.",
+    // Updating works here, but only until the container restarts.
+    containerised: IS_CONTAINER,
   });
 }
 
@@ -149,8 +167,15 @@ export async function POST() {
   const output = [stdout, stderr].map((s) => s.trim()).filter(Boolean).join("\n");
 
   // Permission failures are the expected case in the container image, so name
-  // the real fix instead of surfacing an EACCES trace.
-  const permissionDenied = /EACCES|permission denied|not writable|EPERM/i.test(output + (failed || ""));
+  // the real fix instead of leaving the operator with the CLI's raw advice
+  // (which suggests sudo — there is no sudo in this image, and the change
+  // would not survive a restart anyway).
+  //
+  // Matched against what the CLI actually prints, which is not a single
+  // phrase: "Insufficient permissions to install update", "npm global folder
+  // isn't writable", plus the usual errno spellings.
+  const permissionDenied = /EACCES|EPERM|insufficient permission|permission denied|isn'?t writable|is not writable|not writable/i
+    .test(`${output}\n${failed || ""}`);
 
   return NextResponse.json({
     updated: Boolean(after && before && after !== before),
@@ -161,9 +186,14 @@ export async function POST() {
     error: failed,
     output: output.slice(0, 2000),
     hint: permissionDenied
-      ? "Claude Code is installed under /usr/local in this image and the runtime user cannot write there. "
-        + "Bump CLAUDE_CODE_VERSION in the Dockerfile and rebuild instead — an in-container update would not "
-        + "survive a restart anyway."
+      ? (IS_CONTAINER
+        ? "Claude Code is installed with `npm install -g` under /usr/local in this image, and the container "
+          + "runs as `node`, which cannot write there. Ignore the CLI's advice to use sudo or `claude install`: "
+          + "there is no sudo here, and anything installed at runtime lives in the writable layer and is lost on "
+          + "the next restart. Bump CLAUDE_CODE_VERSION in the Dockerfile and rebuild the image instead."
+        : "The npm global folder is not writable by this user. Either run `claude install` to switch to the "
+          + "native installer (no sudo), or reinstall Claude Code under a prefix you own — "
+          + "`npm config set prefix ~/.npm-global`, add `~/.npm-global/bin` to PATH, reinstall.")
       : null,
   });
 }
