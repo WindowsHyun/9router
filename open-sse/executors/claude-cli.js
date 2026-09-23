@@ -246,6 +246,12 @@ export function planClaudeCliInvocation({ model, messages, platform = process.pl
   // claudeCliTools.js. It leaves the plan as data so the spawn can write it to
   // a file, which keeps this function a pure function of the request.
   const manifest = toMcpManifest(tools);
+  // With tools advertised, ending the turn on the proposal IS the result, so
+  // the limit is pinned to one turn no matter what the caller asked for. Given
+  // another turn the CLI would go on to *invoke* the inert server, read its
+  // refusal, and answer with an apology — losing the tool call the client was
+  // waiting for. Without tools the caller's own limit still applies.
+  const turnLimit = manifest.length ? 1 : maxTurns;
   const budget = claudeCliArgvBudget(platform);
   const inlineSystem = Boolean(system) && system.length + prompt.length > budget;
 
@@ -254,7 +260,7 @@ export function planClaudeCliInvocation({ model, messages, platform = process.pl
       // Never omit --system-prompt: without it Claude Code's own agent prompt
       // applies, which is neither what an API caller asked for nor what they
       // expect to pay for.
-      args: buildClaudeCliArgs({ model, system: system || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT, maxTurns }),
+      args: buildClaudeCliArgs({ model, system: system || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT, maxTurns: turnLimit }),
       prompt,
       inlinedSystem: false,
       manifest,
@@ -262,7 +268,7 @@ export function planClaudeCliInvocation({ model, messages, platform = process.pl
   }
 
   return {
-    args: buildClaudeCliArgs({ model, system: CLAUDE_CLI_INLINE_SYSTEM_PROMPT, maxTurns }),
+    args: buildClaudeCliArgs({ model, system: CLAUDE_CLI_INLINE_SYSTEM_PROMPT, maxTurns: turnLimit }),
     prompt: `[System]\n${system}\n\n${turnsText}`,
     inlinedSystem: true,
     manifest,
@@ -576,21 +582,13 @@ export class ClaudeCliExecutor extends BaseExecutor {
 
     const invocation = planClaudeCliInvocation({ model, messages, maxTurns: b.max_turns, tools: b.tools });
     const prompt = invocation.prompt;
-    // Written before the plan is built, because the path goes on argv.
-    const toolFiles = writeToolManifest(invocation.manifest);
-    // Once per request, on every path that ends it. The MCP server reads the
-    // manifest when it starts, so removing the directory afterwards is safe.
-    let toolFilesRemoved = false;
-    const cleanupToolFiles = () => {
-      if (!toolFiles || toolFilesRemoved) return;
-      toolFilesRemoved = true;
-      try { fs.rmSync(toolFiles.dir, { recursive: true, force: true }); } catch { /* best effort */ }
-    };
-    const args = toolFiles ? [...invocation.args, "--mcp-config", toolFiles.configPath] : invocation.args;
-    const plan = buildSpawnPlan(bin, args);
-    if (plan.error) {
-      log?.info?.("CLAUDE-CLI", plan.error);
-      return { response: errorResponse(plan.error, "unsupported_binary", 503) };
+    // Only the binary can make a plan invalid, so this is settled before any
+    // file is written — the tool files come later, once the request is going
+    // to spawn.
+    const basePlan = buildSpawnPlan(bin, invocation.args);
+    if (basePlan.error) {
+      log?.info?.("CLAUDE-CLI", basePlan.error);
+      return { response: errorResponse(basePlan.error, "unsupported_binary", 503) };
     }
 
     log?.info?.(
@@ -616,6 +614,32 @@ export class ClaudeCliExecutor extends BaseExecutor {
         ),
       };
     }
+
+    // After the slot, deliberately: a request that queues out or is abandoned
+    // never spawns, so it should never leave a directory behind either.
+    const toolFiles = writeToolManifest(invocation.manifest);
+    // Once per request, on every path that can end it.
+    //
+    // Retried once, because the MCP server is a grandchild: it exits when the
+    // interpreter closes its stdin, which can be a moment after the "close"
+    // this runs from. Windows refuses to delete a script a live process is
+    // still executing, and giving up there would leak a directory per request.
+    let toolFilesRemoved = false;
+    const cleanupToolFiles = (retry = true) => {
+      if (!toolFiles || toolFilesRemoved) return;
+      try {
+        fs.rmSync(toolFiles.dir, { recursive: true, force: true });
+        toolFilesRemoved = true;
+      } catch {
+        if (!retry) return;
+        // Unref'd: this must never be the reason the process stays alive.
+        const timer = setTimeout(() => cleanupToolFiles(false), 2000);
+        if (timer.unref) timer.unref();
+      }
+    };
+    const plan = toolFiles
+      ? buildSpawnPlan(bin, [...invocation.args, "--mcp-config", toolFiles.configPath])
+      : basePlan;
 
     const ctx = createClaudeCliContext({
       id: `chatcmpl-${Date.now().toString(36)}`,

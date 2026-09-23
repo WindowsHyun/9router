@@ -20,10 +20,18 @@
  *      tool name and arguments that parse;
  *   2. the same over SSE, arriving as deltas and finishing as tool_calls;
  *   3. the tool result goes back and produces a final answer;
- *   4. a request with no tools still answers in plain text.
+ *   4. a request with no tools still answers in plain text;
+ *   5. the same through /v1/messages, because a Claude Code client speaks the
+ *      Anthropic dialect and its calls have to arrive as tool_use blocks.
  *
- * It spends four small Claude requests on whatever account this machine is
- * signed into. Skips when Claude Code is missing or not signed in.
+ * It runs the production build on purpose. The generated MCP server was once
+ * addressed through `import.meta.url`, which the bundler rewrites — that
+ * failure only appears when a bundler is involved, so the artifact that ships
+ * is the one worth checking.
+ *
+ * It spends eight small Claude requests on whatever account this machine is
+ * signed into. Skips when Claude Code is missing or not signed in, or when
+ * there is no build to run.
  *
  * Needs port 21995 free.
  */
@@ -102,11 +110,15 @@ try {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const env = { ...process.env };
   delete env.JWT_SECRET;
+  if (!fs.existsSync(path.join(ROOT, ".next", "BUILD_ID"))) {
+    console.log("  SKIP  tool calling (no production build — run `npx next build` first)");
+    process.exit(0);
+  }
   server = spawn(process.execPath,
-    [path.join(ROOT, "node_modules", "next", "dist", "bin", "next"), "dev", "--webpack", "--port", String(PORT)], {
+    [path.join(ROOT, "node_modules", "next", "dist", "bin", "next"), "start", "--port", String(PORT)], {
       cwd: ROOT,
       env: {
-        ...env, DATA_DIR, INITIAL_PASSWORD: PASSWORD,
+        ...env, DATA_DIR, INITIAL_PASSWORD: PASSWORD, PORT: String(PORT),
         NODE_OPTIONS: `--require "${path.join(ROOT, "custom-server.js").replace(/\\/g, "/")}"`,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -115,7 +127,7 @@ try {
   server.stderr.on("data", (d) => { log += d; });
 
   await waitFor(async () => (await call({ method: "GET", path: "/api/health" })).status < 500,
-    240000, "next dev to answer");
+    240000, "the built server to answer");
 
   const login = await call({ method: "POST", path: "/api/auth/login", headers: { "content-type": "application/json" } },
     JSON.stringify({ password: PASSWORD }));
@@ -214,7 +226,28 @@ try {
     followUp.status === 200 && /21|clear/i.test(answer),
     `status=${followUp.status} content=${answer.slice(0, 200)} body=${followUp.body.slice(0, 300)}`);
 
-  // 4. No tools: the path that already worked must keep working.
+  // 4. A caller that raises max_turns must still get its call back. With tools
+  //    advertised, a second turn lets the CLI invoke the inert server, read the
+  //    refusal, and answer with an apology — losing the call entirely.
+  const raised = await complete({ model: MODEL, messages: [ASK], tools: TOOLS, max_turns: 5, stream: false });
+  check("raising max_turns does not swallow the tool call",
+    raised.json?.choices?.[0]?.message?.tool_calls?.[0]?.function?.name === "get_weather",
+    `finish=${raised.json?.choices?.[0]?.finish_reason} `
+      + `content=${(raised.json?.choices?.[0]?.message?.content || "").slice(0, 200)}`);
+
+  // 5. Tools offered but not needed: the answer is text, and nothing errors.
+  const unused = await complete({
+    model: MODEL,
+    messages: [{ role: "user", content: "Reply with the single word: ok. Do not use any tool." }],
+    tools: TOOLS,
+    stream: false,
+  });
+  check("a question that needs no tool still answers in text",
+    unused.status === 200 && /ok/i.test(unused.json?.choices?.[0]?.message?.content || "")
+      && !/claude_cli_error/.test(unused.body),
+    `status=${unused.status} body=${unused.body.slice(0, 300)}`);
+
+  // 6. No tools: the path that already worked must keep working.
   const plain = await complete({
     model: MODEL,
     messages: [{ role: "user", content: "Reply with the single word: ok" }],
@@ -226,6 +259,58 @@ try {
   check("...and proposes no tool call of its own",
     !plain.json?.choices?.[0]?.message?.tool_calls?.length,
     JSON.stringify(plain.json?.choices?.[0]?.message || {}).slice(0, 200));
+  // 7. The Anthropic dialect, which is what a Claude Code client actually
+  //    speaks. It reaches the same executor through a different translator, so
+  //    a call that works as OpenAI tool_calls can still be lost on the way back
+  //    out as a tool_use block.
+  const anthropic = (payload) => call({
+    method: "POST",
+    path: "/v1/messages",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+  }, JSON.stringify(payload));
+
+  const ANTHROPIC_TOOLS = [{
+    name: "get_weather",
+    description: "Get the current weather for a city.",
+    input_schema: TOOLS[0].function.parameters,
+  }];
+
+  const messages = await anthropic({
+    model: MODEL,
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "What is the weather in Seoul? Use the tool." }],
+    tools: ANTHROPIC_TOOLS,
+    stream: false,
+  });
+  const block = (messages.json?.content || []).find((c) => c.type === "tool_use");
+  check("a Claude-dialect request gets its call back as a tool_use block",
+    messages.status === 200 && Boolean(block),
+    `status=${messages.status} body=${messages.body.slice(0, 400)}`);
+  check("...under the caller's own tool name, with the input it asked for",
+    block?.name === "get_weather" && /seoul/i.test(JSON.stringify(block?.input || {})),
+    `name=${block?.name} input=${JSON.stringify(block?.input)}`);
+  check("...and stop_reason says a tool call ended the turn",
+    messages.json?.stop_reason === "tool_use",
+    `stop_reason=${messages.json?.stop_reason}`);
+
+  const messagesStream = await anthropic({
+    model: MODEL,
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "What is the weather in Seoul? Use the tool." }],
+    tools: ANTHROPIC_TOOLS,
+    stream: true,
+  });
+  check("...and streams as a tool_use block with its input deltas",
+    /"type"s*:s*"tool_use"/.test(messagesStream.body)
+      && /input_json_delta/.test(messagesStream.body),
+    messagesStream.body.slice(0, 500));
+  check("...with no error event in the Claude-dialect stream",
+    !/"type"s*:s*"error"/.test(messagesStream.body) && !/claude_cli_error/.test(messagesStream.body),
+    messagesStream.body.slice(0, 500));
 } catch (e) {
   check("harness completed", false, e.message);
 } finally {
