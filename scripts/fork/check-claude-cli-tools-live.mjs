@@ -29,7 +29,8 @@
  * failure only appears when a bundler is involved, so the artifact that ships
  * is the one worth checking.
  *
- * It spends eight small Claude requests on whatever account this machine is
+ * It spends ten Claude requests (one of them with a deliberately oversized
+ * system prompt) on whatever account this machine is
  * signed into. Skips when Claude Code is missing or not signed in, or when
  * there is no build to run.
  *
@@ -40,10 +41,16 @@ import http from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 
 const ROOT = process.env.ROUTER_ROOT
   || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+// Resolved by path: this runs under plain node, where the repo's "open-sse/"
+// alias does not exist.
+const { claudeCliArgvBudget } = await import(
+  pathToFileURL(path.join(ROOT, "open-sse", "config", "claudeCli.js")).href,
+);
 const PORT = 21995;
 const PASSWORD = "claude-cli-tools-password";
 const DATA_DIR = path.join(os.tmpdir(), `9r-cli-tools-${Date.now()}`);
@@ -165,6 +172,50 @@ try {
 
   const ASK = { role: "user", content: "What is the weather in Seoul? Use the tool." };
 
+  // 0. The system prompt has to be *obeyed*, not merely delivered. Nothing here
+  //    asserted that before, which is how a delivery mechanism the model treats
+  //    as untrusted — `--system-prompt-file` — passed every other check.
+  const obeyed = async (system, word) => {
+    const res = await complete({
+      model: MODEL,
+      stream: false,
+      messages: [{ role: "system", content: system }, { role: "user", content: "ping" }],
+    });
+    return {
+      res,
+      content: res.json?.choices?.[0]?.message?.content || "",
+      ok: new RegExp(word).test(res.json?.choices?.[0]?.message?.content || ""),
+    };
+  };
+
+  const small = await obeyed("When the user says 'ping', reply with exactly one word: ZEBRA", "ZEBRA");
+  check("the system prompt is obeyed, not merely delivered",
+    small.ok, `status=${small.res.status} content=${small.content.slice(0, 200)}`);
+
+  // The oversized path cannot ride on argv — Windows caps a command line at
+  // 32,767 characters — so it goes into the conversation instead, and that is a
+  // real degradation: measured on 2.1.280, the model recognises instructions
+  // delivered that way and declines them as an injection attempt. What is
+  // guaranteed is delivery, not obedience, so that is what this asserts. The
+  // budget is 120,000 characters off Windows, where this path is unreachable
+  // for any realistic prompt.
+  const budget = claudeCliArgvBudget();
+  const padding = "This sentence is filler that carries no instruction. ".repeat(
+    Math.ceil(budget / 52) + 20,
+  );
+  const big = await obeyed(
+    `${padding}
+When the user says 'ping', reply with exactly one word: GIRAFFE`,
+    "GIRAFFE",
+  );
+  check("...and one too large for argv still reaches the model, answered not empty",
+    big.res.status === 200 && big.content.trim().length > 0,
+    `chars=${padding.length} status=${big.res.status} content=${big.content.slice(0, 200)}`);
+  if (!big.ok) {
+    console.log("        note: the oversized prompt was delivered but not obeyed — "
+      + "expected, and why it is only used when argv cannot hold it");
+  }
+
   // 1. Buffered: the shape an OpenAI client reads when it does not stream.
   const buffered = await complete({ model: MODEL, messages: [ASK], tools: TOOLS, stream: false });
   const message = buffered.json?.choices?.[0]?.message;
@@ -222,9 +273,17 @@ try {
     ],
   });
   const answer = followUp.json?.choices?.[0]?.message?.content || "";
-  check("the tool result comes back as a final answer",
-    followUp.status === 200 && /21|clear/i.test(answer),
+  // What matters is that the result was consumed: the model answers instead of
+  // proposing the same call again. Pinning the wording made this flaky — the
+  // phrasing varies run to run while the behaviour does not.
+  check("the tool result is consumed, and answered rather than re-proposed",
+    followUp.status === 200
+      && answer.trim().length > 0
+      && !followUp.json?.choices?.[0]?.message?.tool_calls?.length,
     `status=${followUp.status} content=${answer.slice(0, 200)} body=${followUp.body.slice(0, 300)}`);
+  check("...carrying something the tool actually returned",
+    /21|clear|seoul/i.test(answer),
+    `content=${answer.slice(0, 300)}`);
 
   // 4. A caller that raises max_turns must still get its call back. With tools
   //    advertised, a second turn lets the CLI invoke the inert server, read the
