@@ -123,6 +123,42 @@ describe("buildReplayFrames", () => {
     ]);
   });
 
+  it("carries an image through, instead of dropping it into the text", () => {
+    // Verified against the real CLI: an image block over stream-json is read by
+    // the model. Before this, an attachment simply vanished and the caller was
+    // told nothing.
+    const { frames } = build([{
+      role: "user",
+      content: [
+        { type: "text", text: "describe" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+      ],
+    }]);
+    // Source order is preserved: an image referred to as "the first one" has to
+    // still be the first one.
+    expect(frames[0].message.content).toEqual([
+      { type: "text", text: "describe" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD" } },
+    ]);
+  });
+
+  it("hands a remote image over as a url source rather than swallowing it", () => {
+    const { frames } = build([{
+      role: "user",
+      content: [{ type: "image_url", image_url: { url: "https://example.test/cat.png" } }],
+    }]);
+    expect(frames[0].message.content).toEqual([
+      { type: "image", source: { type: "url", url: "https://example.test/cat.png" } },
+    ]);
+  });
+
+  it("passes a Claude-dialect image or document straight through", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "eA==" } };
+    const doc = { type: "document", source: { type: "base64", media_type: "application/pdf", data: "eA==" } };
+    const { frames } = build([{ role: "user", content: [image, doc] }]);
+    expect(frames[0].message.content).toEqual([image, doc]);
+  });
+
   it("declines a conversation that ends on the assistant, so the caller flattens it", () => {
     // There would be nothing to query with: the last frame has to be a turn the
     // model is being asked to answer.

@@ -61,6 +61,11 @@ import {
   toMcpManifest,
 } from "./claudeCliTools.js";
 import { buildReplayFrames, framesToStdin, inlineSystemIntoFrames } from "./claudeCliReplay.js";
+import {
+  ignoredRequestFields,
+  toolsAreWanted,
+  unsupportedRequestFeature,
+} from "./claudeCliRequestSupport.js";
 
 // ─── Binary discovery ────────────────────────────────────────────────────────
 
@@ -650,7 +655,28 @@ export class ClaudeCliExecutor extends BaseExecutor {
       return { response: errorResponse(`Unsupported model id for the Claude Code CLI: ${model}`, "invalid_model", 400) };
     }
 
-    const invocation = planClaudeCliInvocation({ model, messages, maxTurns: b.max_turns, tools: b.tools });
+    // Refused before anything is spawned: these change the shape of the answer
+    // the caller promised someone else, and the CLI cannot give them. Answering
+    // anyway would be answering a different question.
+    const unsupported = unsupportedRequestFeature(b);
+    if (unsupported) {
+      return { response: errorResponse(unsupported.message, unsupported.code, 400) };
+    }
+    // The rest only tune an answer that can still be given. Named in the log so
+    // the difference is visible when output is not what someone expected.
+    const ignored = ignoredRequestFields(b);
+    if (ignored.length) {
+      log?.info?.("CLAUDE-CLI", `no equivalent in the CLI, ignored: ${ignored.join(", ")}`);
+    }
+
+    const invocation = planClaudeCliInvocation({
+      model,
+      messages,
+      maxTurns: b.max_turns,
+      // tool_choice "none" is honoured by not advertising them at all, which is
+      // the one part of tool_choice this provider can actually implement.
+      tools: toolsAreWanted(b) ? b.tools : undefined,
+    });
     const stdin = invocation.stdin;
     // Only the binary can make a plan invalid, so this is settled before any
     // file is written — the tool files come later, once the request is going

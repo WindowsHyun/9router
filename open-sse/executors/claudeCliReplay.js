@@ -19,6 +19,32 @@
  * invented for it.
  */
 
+/**
+ * An attachment in the shape the CLI reads, or null.
+ *
+ * Two dialects arrive here. Claude's own blocks pass straight through. OpenAI's
+ * `image_url` carries either a data: URL, which is the same base64 the CLI
+ * wants once it is taken apart, or a remote one, which is handed over as a url
+ * source — if the CLI cannot fetch it the caller gets an error, which beats an
+ * image that silently was not there.
+ */
+function attachmentBlock(part) {
+  if (!part || typeof part !== "object") return null;
+
+  if ((part.type === "image" || part.type === "document") && part.source) return part;
+
+  const url = part.type === "image_url"
+    ? (typeof part.image_url === "string" ? part.image_url : part.image_url?.url)
+    : (part.type === "input_image" ? part.image_url || part.url : null);
+  if (typeof url !== "string" || !url) return null;
+
+  const data = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+  if (data) {
+    return { type: "image", source: { type: "base64", media_type: data[1], data: data[2] } };
+  }
+  return { type: "image", source: { type: "url", url } };
+}
+
 /** Text of one content part, for the parts that carry any. */
 function partText(part) {
   if (typeof part === "string") return part;
@@ -42,6 +68,14 @@ function messageBlocks(message) {
       blocks.push(part);
       continue;
     }
+    // In the order the caller sent them: an image referred to as "the first
+    // one" has to still be the first one.
+    const attachment = attachmentBlock(part);
+    if (attachment) {
+      blocks.push(attachment);
+      continue;
+    }
+
     const text = partText(part);
     if (text) blocks.push({ type: "text", text });
   }

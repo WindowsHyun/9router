@@ -29,8 +29,8 @@
  * failure only appears when a bundler is involved, so the artifact that ships
  * is the one worth checking.
  *
- * It spends ten Claude requests (one of them with a deliberately oversized
- * system prompt) on whatever account this machine is
+ * It spends twelve Claude requests (one with a deliberately oversized system
+ * prompt, one with an image; two more are refused before reaching the model) on whatever account this machine is
  * signed into. Skips when Claude Code is missing or not signed in, or when
  * there is no build to run.
  *
@@ -40,6 +40,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
 import fs from "node:fs";
+import zlib from "node:zlib";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -100,6 +101,44 @@ const waitFor = async (fn, ms, label) => {
   }
   throw new Error(`timed out waiting for ${label} (${last})`);
 };
+
+/**
+ * A solid-colour PNG, built here so the fixture is provably a real image rather
+ * than a base64 string someone remembered.
+ */
+function solidPng(rgb, size = 8) {
+  const row = Buffer.concat([Buffer.from([0]), ...Array.from({ length: size }, () => Buffer.from(rgb))]);
+  const raw = Buffer.concat(Array.from({ length: size }, () => row));
+  const table = [...Array(256)].map((_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf) => {
+    let c = 0xFFFFFFFF;
+    for (const byte of buf) c = table[(c ^ byte) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE(crc(body));
+    return Buffer.concat([length, body, checksum]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 /** SSE `data:` payloads, in order, with the terminator dropped. */
 function sseEvents(body) {
@@ -334,6 +373,60 @@ When the user says 'ping', reply with exactly one word: GIRAFFE`,
   check("an earlier turn is still there on the next request",
     /4271/.test(recall.json?.choices?.[0]?.message?.content || ""),
     `status=${recall.status} content=${(recall.json?.choices?.[0]?.message?.content || "").slice(0, 200)}`);
+
+  // 6c. An attachment has to arrive as an attachment. It used to be dropped on
+  //     the way in, silently, and the model would answer as though nothing had
+  //     been sent.
+  const png = solidPng([237, 28, 36]).toString("base64");
+  const withImage = await complete({
+    model: MODEL,
+    stream: false,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "What single colour fills this image? Reply with one word." },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
+      ],
+    }],
+  });
+  const seen = withImage.json?.choices?.[0]?.message?.content || "";
+  check("an image reaches the model, and is the one that was sent",
+    withImage.status === 200 && /red/i.test(seen),
+    `status=${withImage.status} content=${seen.slice(0, 200)}`);
+
+  // 6d. What the CLI cannot promise is refused, not quietly ignored.
+  const forced = await complete({
+    model: MODEL,
+    messages: [ASK],
+    tools: TOOLS,
+    tool_choice: "required",
+    stream: false,
+  });
+  check("forcing a particular tool is refused, with a reason",
+    forced.status === 400 && /tool_choice/.test(forced.body),
+    `status=${forced.status} body=${forced.body.slice(0, 250)}`);
+
+  const jsonMode = await complete({
+    model: MODEL,
+    messages: [{ role: "user", content: "hi" }],
+    response_format: { type: "json_object" },
+    stream: false,
+  });
+  check("...and so is a structured-output request it cannot guarantee",
+    jsonMode.status === 400 && /JSON/.test(jsonMode.body),
+    `status=${jsonMode.status} body=${jsonMode.body.slice(0, 250)}`);
+
+  // 6e. The one part of tool_choice this provider can implement.
+  const noTools = await complete({
+    model: MODEL,
+    messages: [ASK],
+    tools: TOOLS,
+    tool_choice: "none",
+    stream: false,
+  });
+  check("tool_choice none is honoured: the tools are never offered",
+    noTools.status === 200 && !noTools.json?.choices?.[0]?.message?.tool_calls?.length,
+    `status=${noTools.status} body=${noTools.body.slice(0, 250)}`);
 
   // 7. The Anthropic dialect, which is what a Claude Code client actually
   //    speaks. It reaches the same executor through a different translator, so
