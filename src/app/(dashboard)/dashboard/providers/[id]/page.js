@@ -8,6 +8,7 @@ import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/prov
 import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal, AutoPingScheduleModal, ClaudeCliStatusCard, ClaudeCliAccountsCard } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
+import { unlistedLiveModels } from "@/shared/utils/unlistedModels";
 import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -71,6 +72,7 @@ export default function ProviderDetailPage() {
   const [liveModels, setLiveModels] = useState([]);
   // Live-catalog fetch warning/error (surfaced for zed only; cursor behavior unchanged).
   const [liveModelsError, setLiveModelsError] = useState(null);
+  const [addingLiveModels, setAddingLiveModels] = useState(false);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
   const [disabledModelIds, setDisabledModelIds] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
@@ -574,6 +576,26 @@ export default function ProviderDetailPage() {
       }
     } catch (error) {
       console.log("Error adding custom model:", error);
+    }
+  };
+
+  /**
+   * Adopt models the provider itself reports that the catalog has never heard
+   * of. The catalog is hand-maintained, so a model released yesterday is
+   * invisible here until someone edits it — but the live list has been fetched
+   * on every page load all along and simply thrown away for most providers.
+   * They are added as custom models, which is the same thing a person typing
+   * the id into the box would get.
+   */
+  const handleAddLiveModels = async (list) => {
+    if (addingLiveModels || !list.length) return;
+    setAddingLiveModels(true);
+    try {
+      for (const model of list) {
+        await handleAddCustomModel(model.id, "llm", providerStorageAlias);
+      }
+    } finally {
+      setAddingLiveModels(false);
     }
   };
 
@@ -1193,6 +1215,13 @@ export default function ProviderDetailPage() {
       type: "llm",
     });
 
+    // Reported by the provider, absent from everything above.
+    const unlistedModels = unlistedLiveModels({
+      liveModels,
+      listedModels: allModels,
+      customModelRows,
+    });
+
     return (
       <div className="flex flex-wrap gap-3">
         {/* Custom models first */}
@@ -1330,6 +1359,40 @@ export default function ProviderDetailPage() {
                   onClick={() => handleEnableModel(m.id)}
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
                   title="Restore model"
+                >
+                  <span className="material-symbols-outlined text-[13px]">add</span>
+                  {m.id}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Reported by the provider, not in the catalog yet */}
+        {unlistedModels.length > 0 && (
+          <div className="w-full mt-2">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-text-muted">
+                {`Not in the catalog yet (${unlistedModels.length}) — reported by this provider:`}
+              </p>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="library_add"
+                disabled={addingLiveModels}
+                onClick={() => handleAddLiveModels(unlistedModels)}
+              >
+                {addingLiveModels ? "Adding..." : "Add all"}
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {unlistedModels.map((m) => (
+                <button
+                  key={m.id}
+                  disabled={addingLiveModels}
+                  onClick={() => handleAddLiveModels([m])}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors disabled:opacity-40"
+                  title="Add this model"
                 >
                   <span className="material-symbols-outlined text-[13px]">add</span>
                   {m.id}
