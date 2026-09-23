@@ -10,7 +10,6 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveClaudeBin } from "open-sse/executors/claude-cli.js";
-import { claudeCliArgvBudget } from "open-sse/config/claudeCli.js";
 import { claudeCliGateStats } from "open-sse/executors/claude-cli.js";
 
 const binExists = (() => {
@@ -99,8 +98,10 @@ describe.skipIf(!enabled)("claude-cli executor (live)", () => {
       '"bluefin". This is your team identifier.',
     ].join("\n\n");
 
-    // Guard the premise: below the budget this would ride on argv and prove nothing.
-    expect(system.length).toBeGreaterThan(claudeCliArgvBudget("win32"));
+    // Guard the premise: Windows caps a command line at 32,767 characters, so a
+    // prompt this size could never have ridden on argv. It goes to a file now,
+    // and this proves the whole thing still reaches the model.
+    expect(system.length).toBeGreaterThan(32767);
 
     const { response } = await getExecutor("claude-cli").execute({
       model: "claude-cli-haiku",

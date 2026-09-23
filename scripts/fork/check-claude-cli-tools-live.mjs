@@ -259,6 +259,23 @@ try {
   check("...and proposes no tool call of its own",
     !plain.json?.choices?.[0]?.message?.tool_calls?.length,
     JSON.stringify(plain.json?.choices?.[0]?.message || {}).slice(0, 200));
+  // 6b. History has to arrive as history. Replayed turns go in as real frames
+  //     the CLI acknowledges without calling the model; a transcript pasted
+  //     into one prompt would also "work", so this asks for something only the
+  //     earlier turn can supply.
+  const recall = await complete({
+    model: MODEL,
+    stream: false,
+    messages: [
+      { role: "user", content: "Remember the number 4271. Reply with just: ok" },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "What number did I ask you to remember? Reply with only the digits." },
+    ],
+  });
+  check("an earlier turn is still there on the next request",
+    /4271/.test(recall.json?.choices?.[0]?.message?.content || ""),
+    `status=${recall.status} content=${(recall.json?.choices?.[0]?.message?.content || "").slice(0, 200)}`);
+
   // 7. The Anthropic dialect, which is what a Claude Code client actually
   //    speaks. It reaches the same executor through a different translator, so
   //    a call that works as OpenAI tool_calls can still be lost on the way back
