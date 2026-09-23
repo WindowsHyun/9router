@@ -191,6 +191,28 @@ describe("planClaudeCliInvocation", () => {
     expect(plan.manifest[0].name).toBe("get_weather");
   });
 
+  it("pins the turn limit to one when tools are advertised", () => {
+    // A second turn lets the CLI invoke the inert server, read its refusal and
+    // answer with an apology — the client never sees the call it was waiting
+    // for. The caller does not get to raise that.
+    const plan = planClaudeCliInvocation({
+      model: "claude-cli-haiku",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [OPENAI_TOOL],
+      maxTurns: 5,
+    });
+    expect(plan.args[plan.args.indexOf("--max-turns") + 1]).toBe("1");
+  });
+
+  it("leaves the caller's turn limit alone when there are no tools", () => {
+    const plan = planClaudeCliInvocation({
+      model: "claude-cli-haiku",
+      messages: [{ role: "user", content: "hi" }],
+      maxTurns: 5,
+    });
+    expect(plan.args[plan.args.indexOf("--max-turns") + 1]).toBe("5");
+  });
+
   it("reports no manifest for a request with no tools, so nothing extra spawns", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
