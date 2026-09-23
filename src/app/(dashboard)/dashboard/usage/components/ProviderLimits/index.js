@@ -3,8 +3,16 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import QuotaTable from "./QuotaTable";
+// Kept in its own file: index.js is already long, and the grouped view
+// shares only data with the flat list, not layout.
+import GroupedByProvider from "./GroupedByProvider";
 import Toggle from "@/shared/components/Toggle";
 import Tooltip from "@/shared/components/Tooltip";
+// Shared with the provider pages and the server-side scheduler. The reactive
+// toggle below stays gated on authType "oauth" regardless: a provider whose
+// credentials are local (claude-cli) reports no usage, so there is no reset
+// time for it to react to — its keepalive is a cron schedule instead.
+import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
 import {
   parseQuotaData,
   calculatePercentage,
@@ -55,10 +63,7 @@ const KIRO_METHOD_LABELS = {
   api_key: "API Key",
 };
 
-const AUTO_PING_SETTINGS_KEYS = {
-  claude: "claudeAutoPing",
-  codex: "codexAutoPing",
-};
+const VIEW_MODE_STORAGE_KEY = "9router.quotaTracker.viewMode";
 
 const AUTO_PING_TOOLTIPS = {
   claude: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
@@ -159,6 +164,7 @@ export default function ProviderLimits() {
   const [bulkToggling, setBulkToggling] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(CONNECTIONS_PAGE_SIZE);
+  const [viewMode, setViewMode] = useState("list");
   const [customPageSizeInput, setCustomPageSizeInput] = useState(
     String(CONNECTIONS_PAGE_SIZE),
   );
@@ -541,15 +547,28 @@ export default function ProviderLimits() {
     window.localStorage.setItem(AUTO_REFRESH_STORAGE_KEY, String(autoRefresh));
   }, [autoRefresh, hasHydratedAutoRefresh]);
 
+  // "list" keeps the card-per-account layout; "grouped" collapses each
+  // provider to one card with an account picker. Remembered per browser, and
+  // wrapped because storage throws in a private window.
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+      if (stored === "grouped" || stored === "list") setViewMode(stored);
+    } catch { /* the default is fine */ }
+  }, []);
+  useEffect(() => {
+    try { window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode); } catch { /* not essential */ }
+  }, [viewMode]);
+
   // Load auto-ping per-connection maps
   useEffect(() => {
     fetch("/api/settings", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : {}))
       .then((s) => {
-        setAutoPingMaps({
-          claude: s?.claudeAutoPing?.connections || {},
-          codex: s?.codexAutoPing?.connections || {},
-        });
+        setAutoPingMaps(Object.fromEntries(
+          Object.entries(AUTO_PING_SETTINGS_KEYS)
+            .map(([provider, key]) => [provider, s?.[key]?.connections || {}]),
+        ));
         setQuotaVisibility(s?.quotaVisibility || {});
       })
       .catch(() => {});
@@ -1038,6 +1057,45 @@ export default function ProviderLimits() {
         </div>
       </div>
 
+      {/* View switch: the flat list stays the default; grouped collapses
+          each provider to one card with an account picker. */}
+      <div className="flex items-center gap-1 rounded-lg bg-surface-2 p-0.5 text-xs w-fit">
+        {[["list", "By account"], ["grouped", "By provider"]].map(([mode, label]) => (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => setViewMode(mode)}
+            aria-pressed={viewMode === mode}
+            className={`rounded-md px-2.5 py-1 transition-colors ${
+              viewMode === mode
+                ? "bg-surface text-text-main shadow-sm"
+                : "text-text-muted hover:text-text-main"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {viewMode === "grouped" && pagination.totalPages > 1 && (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+          Grouping covers the accounts on this page. Raise the page size below to
+          gather every account of a provider into one card.
+        </div>
+      )}
+
+      {viewMode === "grouped" && (
+        <GroupedByProvider
+          connections={sortedConnections}
+          quotaData={quotaData}
+          loading={loading}
+          errors={errors}
+          onRefresh={(id, provider) => refreshProvider(id, provider)}
+          onHideQuota={handleHideQuota}
+          quotaVisibility={quotaVisibility}
+        />
+      )}
+
       {/* Provider cards: 2 columns, compact */}
       {expiringFirst && (
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
@@ -1047,7 +1105,7 @@ export default function ProviderLimits() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {sortedConnections.map((conn) => {
+        {(viewMode === "list" ? sortedConnections : []).map((conn) => {
           const quota = quotaData[conn.id];
           const isLoading = loading[conn.id];
           const error = errors[conn.id];
@@ -1276,7 +1334,12 @@ export default function ProviderLimits() {
                     </span>
                     <p className="mt-1.5 text-xs text-text-muted">{error}</p>
                   </div>
-                ) : quota?.message ? (
+                ) : quota?.message && visibleQuotas.length === 0 ? (
+                  // Only *instead of* the table, never as well as it. A message
+                  // used to mean "there is no quota to show" — but a provider
+                  // that reports no upstream limit sends figures AND a message
+                  // saying whose numbers they are, and that combination hid the
+                  // figures completely and printed the message twice.
                   <div className="text-center py-5">
                     <p className="text-xs text-text-muted">{quota.message}</p>
                   </div>
@@ -1291,7 +1354,10 @@ export default function ProviderLimits() {
                     onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
                   />
                 )}
-                {quota?.message && !error && !isLoading && (
+                {/* The footnote under the table, so it only appears when a
+                    table was drawn — otherwise it repeats the message the
+                    empty state above is already showing. */}
+                {quota?.message && !error && !isLoading && visibleQuotas.length > 0 && (
                   <p className="mt-2 px-1 text-[10px] leading-relaxed text-text-muted">
                     {quota.message}
                   </p>

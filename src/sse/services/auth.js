@@ -42,8 +42,18 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
     const providerId = resolveProviderId(provider);
 
-    // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
-    if (FREE_PROVIDERS[providerId]?.noAuth) {
+    // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings).
+    //
+    // Skipped when the provider actually has connection rows. For a provider
+    // whose "account" is a local resource — a Claude Code config directory, a
+    // bridge endpoint — several accounts are meaningful, and returning the
+    // single synthetic "Public" connection here made multi-account impossible:
+    // the real rows below were never reached, so neither was per-account
+    // fallback or rotation.
+    const noAuthRows = FREE_PROVIDERS[providerId]?.noAuth
+      ? await getProviderConnections({ provider: providerId, isActive: true })
+      : [];
+    if (FREE_PROVIDERS[providerId]?.noAuth && noAuthRows.length === 0) {
       const settings = await getSettings();
       const override = (settings.providerStrategies || {})[providerId] || {};
       const strategy = override.rotateStrategy || "none";

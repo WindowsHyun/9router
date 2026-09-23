@@ -5,7 +5,7 @@ import { getProviderConnectionById, updateProviderConnection } from "@/lib/local
 import { getUsageForProvider } from "open-sse/services/usage.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
+import { USAGE_APIKEY_PROVIDERS, USAGE_ROUTED_PROVIDERS } from "@/shared/constants/providers";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -140,6 +140,15 @@ export async function GET(request, { params }) {
       connection.authType === "apikey" || connection.authType === "api_key";
     const isApikeyEligible =
       isApikeyAuth && USAGE_APIKEY_PROVIDERS.includes(connection.provider);
+
+    // A provider whose credential is local (claude-cli) stores its
+    // connections with authType "none" and reports no quota upstream. They are still worth tracking, from what this server routed —
+    // getRoutedUsage says so in its own message and flags every figure
+    // unlimited, so nothing is presented as a subscription limit.
+    if (USAGE_ROUTED_PROVIDERS.includes(connection.provider)) {
+      const { getRoutedUsage } = await import("@/shared/services/routedUsage");
+      return Response.json(await getRoutedUsage(connection));
+    }
 
     if (!isOAuth && !isApikeyEligible) {
       return Response.json({ message: "Usage not available for this connection" });
