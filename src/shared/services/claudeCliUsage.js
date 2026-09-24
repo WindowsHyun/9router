@@ -24,7 +24,7 @@
  * count of what this server itself routed.
  */
 import { getClaudeUsage } from "open-sse/services/usage/claude.js";
-import { rateLimitWindows, windowsToQuotas } from "open-sse/executors/claudeCliRateLimits.js";
+import { rateLimitWindows, windowsToQuotas, cacheUsageSentence } from "open-sse/executors/claudeCliRateLimits.js";
 import { claudeCliAccessToken } from "@/shared/services/claudeCliAccountRepair";
 import { getRoutedUsage } from "@/shared/services/routedUsage";
 
@@ -45,7 +45,10 @@ export async function getClaudeCliUsage(connection, proxyOptions = null, options
     // returning the soft failure would replace real figures with an error
     // string on a card that had been working.
     const usage = await getClaudeUsage(token, proxyOptions, { force: options?.force === true });
-    if (usage?.quotas && Object.keys(usage.quotas).length > 0) return usage;
+    if (usage?.quotas && Object.keys(usage.quotas).length > 0) {
+      const cache = cacheUsageSentence(connection?.providerSpecificData || {});
+      return cache ? { ...usage, message: `${usage.message || ""}${cache}`.trim() } : usage;
+    }
     failure = usage?.message || "the usage endpoint returned nothing";
   }
 
@@ -61,7 +64,8 @@ export async function getClaudeCliUsage(connection, proxyOptions = null, options
       quotas,
       message: "Reported by Claude Code on this account's last routed request"
         + (recorded.at ? ` (${new Date(recorded.at).toISOString()})` : "")
-        + ".",
+        + "."
+        + cacheUsageSentence(connection?.providerSpecificData || {}),
     };
   }
 
@@ -75,8 +79,10 @@ export async function getClaudeCliUsage(connection, proxyOptions = null, options
     ...routed,
     message: token
       ? `${routed.message} Its subscription quota could not be read: ${failure}`
+        + cacheUsageSentence(connection?.providerSpecificData || {})
       : `${routed.message} No credential could be resolved for this account, so its `
-        + "subscription quota was never asked for.",
+        + "subscription quota was never asked for."
+        + cacheUsageSentence(connection?.providerSpecificData || {}),
   };
 }
 

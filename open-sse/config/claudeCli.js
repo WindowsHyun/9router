@@ -108,8 +108,43 @@ export function conflictingHostAuth(env = process.env) {
 //
 // Until it does hold up, the default has to be the path that works. Set
 // CLI_CLAUDE_CACHE_RELAY=1 to try it.
+//
+// Superseded by the session cache (CLI_CLAUDE_SESSION_CACHE, see
+// executors/claudeCliSessions.js), which wins when both are on. Measured
+// 2026-09-24 on 2.1.281, docs/fable/2026-09-24-claude-cli-prompt-cache-plan.md:
+// driven inside the Next server against a local stand-in for the API, and then
+// once against the real one, the relay answered every turn in ~2s with
+// {"forwarded":1,"status":200} — the hang did not reproduce on a macOS host
+// without a proxy. But it read back nothing past the system prompt: the replay
+// folds history into the newest user turn, so the prefix diverges before any
+// breakpoint the relay could move. Kept, off, so a CLI that replays in order
+// can be re-measured with scripts/fork/check-claude-cli-cache-offline.mjs relay.
 export function cacheRelayEnabled(env = process.env) {
   return String(env.CLI_CLAUDE_CACHE_RELAY ?? "0").toLowerCase() === "1";
+}
+
+// A stand-in for the API, for test harnesses only (scripts/fork/lib/fake-anthropic.mjs).
+//
+// Every diagnosis of the cache relay used to cost a real request, and every
+// failed one locked the account for thirty seconds. With this set the child —
+// or the relay, when it is on — talks to a local fake instead, so the exact
+// bytes the CLI sends can be captured and the relay exercised inside the Next
+// server without anything reaching Anthropic.
+//
+// Loopback HTTP only: the child sends its real credential to wherever this
+// points, so anything that is not this host is refused outright. Never set in
+// the Dockerfile, .env.example or a deployment.
+export function upstreamOverride(env = process.env) {
+  const raw = String(env.CLI_CLAUDE_UPSTREAM_OVERRIDE ?? "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    const loopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname);
+    if (url.protocol !== "http:" || !loopback || url.username || url.password) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
 }
 
 // How a tool turn is written when the conversation cannot be replayed as turns.

@@ -25,6 +25,8 @@ export const ADDED_FILES = [
   "open-sse/config/claudeCli.js",
   "open-sse/executors/claude-cli.js",
   "open-sse/providers/registry/claude-cli.js",
+  // sessions resumed across turns so the prompt cache hits (docs/fable)
+  "open-sse/executors/claudeCliSessions.js",
   "src/app/api/cli-tools/claude-cli-settings/route.js",
   "src/shared/components/ClaudeCliStatusCard.js",
   // cron auto-ping
@@ -45,6 +47,8 @@ export const ADDED_FILES = [
   "src/shared/components/ClaudeCliAccountsCard.js",
   // tests — their absence means the fork is present but unproven
   "tests/unit/claude-cli-executor.test.js",
+  "tests/unit/claude-cli-sessions.test.js",
+  "tests/unit/claude-cli-session-executor.test.js",
   "tests/unit/concurrency-gate.test.js",
   "tests/unit/quota-autoping-cron.test.js",
   "tests/unit/forced-sse-client-format.test.js",
@@ -64,6 +68,13 @@ export const ADDED_FILES = [
   "scripts/fork/check-claude-accounts.mjs",
   // validates a Kubernetes bundle against the traps in AGENT-HANDOFF.md
   "scripts/fork/check-k8s-manifests.mjs",
+  // the prompt-cache gate: real binary, fake or real upstream
+  "scripts/fork/check-claude-cli-resume-cache.mjs",
+  "scripts/fork/check-claude-cli-cache-offline.mjs",
+  "scripts/fork/lib/fake-anthropic.mjs",
+  "scripts/fork/lib/diff-prompt-prefix.mjs",
+  "docs/fable/2026-09-24-claude-cli-prompt-cache-design.md",
+  "docs/fable/2026-09-24-claude-cli-prompt-cache-plan.md",
 ];
 
 /** Artwork the fork reuses from upstream files; regenerated rather than carried. */
@@ -241,6 +252,8 @@ export const FORK_PROVIDERS = [
 export const FORK_TESTS = [
   "unit/agent-skills.test.js",
   "unit/claude-cli-executor.test.js",
+  "unit/claude-cli-sessions.test.js",
+  "unit/claude-cli-session-executor.test.js",
   "unit/concurrency-gate.test.js",
   "unit/quota-autoping-cron.test.js",
   "unit/forced-sse-client-format.test.js",

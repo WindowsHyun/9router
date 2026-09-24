@@ -65,6 +65,45 @@ export function rateLimitWindows(psd) {
 /** Only for tests: forget everything recorded so far. */
 export function resetRateLimitWindows() {
   store.clear();
+  cacheStore.clear();
+}
+
+// How much of each account's prompt the cache served, over what it routed.
+//
+// A prompt cache fails silently: a CLI update that moves the breakpoint, or a
+// client that starts stamping the time into its system prompt, takes the hit
+// rate to zero with no error anywhere. Kept beside the windows because it is
+// read in the same place — the account's quota card — which is where an
+// operator already looks when a subscription drains faster than it should.
+const cacheStore = (globalThis.__claudeCliCacheUsage ??= new Map());
+
+/** Add one routed turn's usage (the CLI's own `usage` object) to its account. */
+export function recordCacheUsage(psd, usage) {
+  if (!usage || typeof usage !== "object") return;
+  const key = rateLimitAccountKey(psd) || "host";
+  const read = Number(usage.cache_read_input_tokens) || 0;
+  const prompt = read + (Number(usage.cache_creation_input_tokens) || 0) + (Number(usage.input_tokens) || 0);
+  if (!prompt) return;
+  const total = cacheStore.get(key) || { read: 0, prompt: 0, turns: 0, since: Date.now() };
+  total.read += read;
+  total.prompt += prompt;
+  total.turns += 1;
+  cacheStore.set(key, total);
+}
+
+/** `{ read, prompt, turns, since, ratio }` for the account, or null before its first routed turn. */
+export function cacheUsageTotals(psd) {
+  const total = cacheStore.get(rateLimitAccountKey(psd) || "host");
+  if (!total || !total.prompt) return null;
+  return { ...total, ratio: total.read / total.prompt };
+}
+
+/** One sentence for the quota card, or "" when there is nothing yet. */
+export function cacheUsageSentence(psd) {
+  const total = cacheUsageTotals(psd);
+  if (!total) return "";
+  return ` Prompt cache: ${Math.round(total.ratio * 100)}% of ${total.prompt.toLocaleString("en-US")} prompt tokens `
+    + `read back from cache over ${total.turns} routed turn${total.turns === 1 ? "" : "s"} since ${new Date(total.since).toISOString()}.`;
 }
 
 const WINDOW_NAMES = {

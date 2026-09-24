@@ -194,4 +194,29 @@ describe.skipIf(!enabled)("claude-cli token precedence (live)", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 260_000);
+
+  // The session cache's reason to exist, measured on the real API: the second
+  // turn reads the first turn's whole prompt back from cache. With it off the
+  // read stops at the system prompt (docs/fable, measurement record).
+  it("keeps the prompt cache across turns with the session cache on", async () => {
+    const saved = process.env.CLI_CLAUDE_SESSION_CACHE;
+    process.env.CLI_CLAUDE_SESSION_CACHE = "1";
+    try {
+      const executor = getExecutor("claude-cli");
+      const system = ["Answer in one short sentence.",
+        ...Array.from({ length: 300 }, (_, i) => `Fact ${i}: marker ${i} is on shelf ${i * 13 % 997}.`)].join("\n");
+      const ask = async (messages) => collect((await executor.execute({ model: "claude-cli-haiku", body: { messages } })).response);
+      const messages = [{ role: "system", content: system }, { role: "user", content: "Which shelf holds marker 3?" }];
+      const first = await ask(messages);
+      expect(first.errors).toEqual([]);
+      // The next turn arrives the moment the answer does, as a client's would.
+      messages.push({ role: "assistant", content: first.content }, { role: "user", content: "And marker 5?" });
+      const second = await ask(messages);
+      expect(second.errors).toEqual([]);
+      const read = second.usage?.prompt_tokens_details?.cached_tokens || 0;
+      expect(read / first.usage.prompt_tokens).toBeGreaterThanOrEqual(0.8);
+    } finally {
+      if (saved === undefined) delete process.env.CLI_CLAUDE_SESSION_CACHE; else process.env.CLI_CLAUDE_SESSION_CACHE = saved;
+    }
+  }, 240_000);
 });

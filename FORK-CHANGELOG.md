@@ -8,6 +8,67 @@ See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
 ## Unreleased (on top of v0.5.85)
 
+### Features
+
+#### Claude Code CLI: the prompt cache survives across turns (`CLI_CLAUDE_SESSION_CACHE=1`, off by default)
+
+Every turn of a conversation through `claude-cli` used to reprocess the whole
+history: only the system prompt was ever read back from cache. The cause,
+measured on 2.1.281 with the real binary against a local stand-in for the API:
+replaying a conversation through `--input-format stream-json` folds the
+`shouldQuery: false` history into the newest user turn — the assistant turn
+goes first, every earlier question arrives inside the newest turn behind the
+CLI's reminders — so the prefix differs from the previous request's at the
+first message.
+
+With the flag on, each conversation continues its own Claude Code session:
+the first turn runs as today under `--session-id`, and a turn whose history is
+exactly what this server answered last time runs `--resume <id>` with the
+newest turn alone. The CLI rebuilds the conversation from its own session file
+and the request repeats the previous one through the CLI's own breakpoint.
+Still `claude -p`, still the CLI's own auth and request — no relay, no
+base-URL override, nothing rewritten.
+
+Measured live on haiku through the whole server, three turns each:
+
+| path | turn 2 read back | turn 3 read back |
+|---|---|---|
+| today (flag off) | 6,424 of 8,120 (the system prompt) | 6,424 of 9,484 |
+| session cache | 8,138 of 8,148 | 9,577 of 9,587 |
+
+- A conversation this server has not answered before — a history that
+  arrived from elsewhere, or the first turn after a restart — is written as a
+  transcript and resumed, so the model sees the history in order. Without
+  this (and on today's path with the flag off) the CLI folds every earlier
+  question into the newest turn, assistant turns first, and the model
+  re-answers them; measured live, "And of Korea?" after Paris/Tokyo now
+  answers "Seoul." alone.
+- A turn that ended by proposing a tool call is never continued: under
+  `--permission-mode dontAsk` the CLI closes that call in its own transcript
+  with a denial, and a resumed turn carrying the client's real result for the
+  same id is dropped (measured). The tool-result turn runs the fresh replay,
+  which pairs it correctly. So this helps chat-style conversations — a text
+  answer followed by the next question — and does little for tool loops.
+- A resume whose session is gone is answered in full by a fresh run within the
+  same request, as long as nothing has reached the client yet.
+- Sessions are kept in the account's `<config>/projects/` and deleted when
+  their entry expires (15 minutes; the cache itself lasts five). A previous
+  process's leftovers are cleared on first use, only in this provider's own
+  marked directories.
+- `usage.prompt_tokens_details.cached_tokens` / `cache_creation_tokens` are now
+  reported, and the quota card says what share of each account's prompt came
+  from cache — a cache that stops hitting fails silently otherwise.
+- `CLI_CLAUDE_UPSTREAM_OVERRIDE` (loopback only, test harnesses only) points the
+  child at `scripts/fork/lib/fake-anthropic.mjs`, so all of this can be checked
+  without spending subscription usage: `scripts/fork/check-claude-cli-cache-offline.mjs`,
+  `scripts/fork/check-claude-cli-resume-cache.mjs --offline`.
+- The cache relay (`CLI_CLAUDE_CACHE_RELAY`) is superseded and stays off: it
+  answers, but cannot make a folded replay's prefix recur.
+
+Known and not changed here: with the flag off, and on the first turn of a
+session, the replayed history still reaches the model folded as above. See
+docs/fable/2026-09-24-claude-cli-prompt-cache-design.md.
+
 ### Removed
 
 #### The ChatGPT Web provider, and its bridge container

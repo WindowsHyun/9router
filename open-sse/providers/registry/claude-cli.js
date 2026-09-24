@@ -26,7 +26,7 @@ export default {
     website: "https://claude.com/claude-code",
     notice: {
       signupUrl: "https://claude.com/claude-code",
-      text: "Runs the local `claude` binary in print mode (`claude -p`) — no API key needed, and no OAuth token replay. Install Claude Code and sign in once (`claude` → /login). Set CLI_CLAUDE_BIN to pin a custom path. Tool calling is not supported on this provider.",
+      text: "Runs the local `claude` binary in print mode (`claude -p`) — no API key needed, and no OAuth token replay. Install Claude Code and sign in once (`claude` → /login). Set CLI_CLAUDE_BIN to pin a custom path. Tool calling is not supported on this provider. Set CLI_CLAUDE_SESSION_CACHE=1 to keep the prompt cache across text turns and to hand the model its history in order: a conversation continues its own Claude Code session (turns that end in a tool call are replayed instead), kept in the account's config directory (projects/) for 15 minutes and then deleted.",
     },
   },
   category: "free",

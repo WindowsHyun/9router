@@ -18,6 +18,7 @@
  * no replay and keeps the flattened prompt, rather than having a continuation
  * invented for it.
  */
+import crypto from "node:crypto";
 import { CLAUDE_CLI_TRANSCRIPT_MARKERS } from "../config/claudeCli.js";
 
 /**
@@ -220,6 +221,71 @@ export function buildReplayFrames(messages, toolPrefix) {
 /** The frames as the CLI reads them: one JSON document per line. */
 export function framesToStdin(frames) {
   return `${frames.map((frame) => JSON.stringify(frame)).join("\n")}\n`;
+}
+
+/**
+ * How much of a replay can be handed to the CLI as a transcript to resume,
+ * rather than as frames on stdin.
+ *
+ * Measured on 2.1.281 with the request bodies captured: history frames on
+ * stdin (`shouldQuery: false`) are not placed as history. The CLI queues them
+ * and folds them into the newest user turn — the assistant turns land first,
+ * every earlier question arrives inside the newest turn behind the CLI's
+ * reminders. The model then sees the conversation in the wrong order and, in
+ * the live run, re-answered earlier questions. A transcript the CLI resumes is
+ * placed correctly, user/assistant/tool blocks alike, and this module can
+ * write one: the CLI accepts records carrying only parentUuid, uuid, type,
+ * message, sessionId, cwd and timestamp, from any directory under
+ * `<config>/projects/`.
+ *
+ * What cannot be seeded: a conversation whose query is a tool result. The CLI
+ * closes any unanswered tool_use in a transcript by its own rules ("[Tool call
+ * interrupted]", or a permission denial), and drops the client's result for
+ * that id as a duplicate. Every combination was tried — the pair in the
+ * transcript, the pair on stdin, the result alone — and none put the client's
+ * result in front of the model. Those requests keep today's stdin replay,
+ * which pairs them correctly.
+ *
+ * @returns {{ seed: Array<object>, query: object } | null}
+ *   `seed` is every frame but the last, as transcript records-to-be; null when
+ *   the conversation cannot be seeded.
+ */
+export function transcriptSeed(frames) {
+  if (!Array.isArray(frames) || frames.length < 2) return null;
+  const query = frames[frames.length - 1];
+  if (query?.type !== "user") return null;
+  const blocks = query.message?.content;
+  if (Array.isArray(blocks) && blocks.some((b) => b?.type === "tool_result")) return null;
+  return { seed: frames.slice(0, -1), query };
+}
+
+/**
+ * The transcript itself: one record per frame, chained by uuid, in the shape
+ * the CLI's own writer produces minus everything it does not need to read
+ * back (measured; see transcriptSeed).
+ *
+ * @param {Array<object>} seed frames from transcriptSeed
+ * @param {{ sessionId: string, cwd: string, now?: number }} where
+ * @returns {string} JSONL, newline-terminated
+ */
+export function transcriptRecords(seed, { sessionId, cwd, now = Date.now() }) {
+  let parent = null;
+  const lines = seed.map((frame, index) => {
+    const uuid = crypto.randomUUID();
+    const record = {
+      parentUuid: parent,
+      type: frame.type,
+      message: { role: frame.message?.role || frame.type, content: frame.message?.content || [] },
+      uuid,
+      sessionId,
+      cwd,
+      // Strictly increasing and in the past; the CLI orders by it.
+      timestamp: new Date(now - (seed.length - index) * 1000).toISOString(),
+    };
+    parent = uuid;
+    return JSON.stringify(record);
+  });
+  return `${lines.join("\n")}\n`;
 }
 
 /**

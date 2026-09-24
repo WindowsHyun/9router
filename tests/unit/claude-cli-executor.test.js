@@ -131,7 +131,10 @@ describe("claude-cli stream translation", () => {
     // Usage must ride the finish chunk. On a separate choice-less frame the
     // passthrough injects a body-size estimate onto the finish chunk first and
     // mergeUsage keeps the larger of the two, over-reporting every request.
-    expect(parsed[0].usage).toEqual({ prompt_tokens: 15, completion_tokens: 3, total_tokens: 18 });
+    expect(parsed[0].usage).toEqual({
+      prompt_tokens: 15, completion_tokens: 3, total_tokens: 18,
+      prompt_tokens_details: { cached_tokens: 5 },
+    });
   });
 
   // Cache *writes* are the expensive input, and they arrive under their own
@@ -151,7 +154,29 @@ describe("claude-cli stream translation", () => {
       },
     }, c).frames);
     expect(parsed.at(-1).usage)
-      .toEqual({ prompt_tokens: 2015, completion_tokens: 3, total_tokens: 2018 });
+      .toEqual({
+        prompt_tokens: 2015, completion_tokens: 3, total_tokens: 2018,
+        prompt_tokens_details: { cached_tokens: 5, cache_creation_tokens: 2000 },
+      });
+  });
+
+  // The sum alone hides whether the cache hit at all, which is the one thing
+  // worth knowing about a long conversation on this provider.
+  it("names the cache split under the fields openai-to-claude reads back", () => {
+    const parsed = parseFrames(translateClaudeCliEvent({
+      type: "result", subtype: "success", result: "done",
+      usage: { input_tokens: 7, cache_read_input_tokens: 40516, cache_creation_input_tokens: 12, output_tokens: 3 },
+    }, ctx()).frames);
+    expect(parsed.at(-1).usage.prompt_tokens_details)
+      .toEqual({ cached_tokens: 40516, cache_creation_tokens: 12 });
+  });
+
+  it("leaves the details out when the CLI reported no cache fields", () => {
+    const parsed = parseFrames(translateClaudeCliEvent({
+      type: "result", subtype: "success", result: "done",
+      usage: { input_tokens: 7, output_tokens: 3 },
+    }, ctx()).frames);
+    expect(parsed.at(-1).usage).toEqual({ prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 });
   });
 
   it("maps max_tokens stop reason to length", () => {

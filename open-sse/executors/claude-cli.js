@@ -35,6 +35,7 @@
  */
 
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
@@ -54,6 +55,7 @@ import {
   CLAUDE_CLI_CHILD_ENV,
   CLAUDE_CLI_ENV_ALLOWLIST,
   cacheRelayEnabled,
+  upstreamOverride,
   conflictingHostAuth,
   CLAUDE_CLI_QUEUE_TIMEOUT_MS,
   CLAUDE_CLI_UPSTREAM_MODELS,
@@ -68,8 +70,19 @@ import {
   mcpConfigDocument,
   toMcpManifest,
 } from "./claudeCliTools.js";
-import { buildReplayFrames, describeFrames, framesToStdin } from "./claudeCliReplay.js";
-import { recordRateLimitEvent } from "./claudeCliRateLimits.js";
+import { buildReplayFrames, describeFrames, framesToStdin, transcriptSeed, transcriptRecords } from "./claudeCliReplay.js";
+import { recordRateLimitEvent, rateLimitAccountKey, recordCacheUsage } from "./claudeCliRateLimits.js";
+import {
+  sessionCacheEnabled,
+  sharedSessionRegistry,
+  sessionCacheKey,
+  conversationKey,
+  splitQueryFrame,
+  sessionConfigDir,
+  sessionFileExists,
+  sessionProjectDir,
+  createAnswerRecorder,
+} from "./claudeCliSessions.js";
 import { startAdmission } from "./claudeCliAdmission.js";
 import {
   generationExtraBody,
@@ -296,6 +309,7 @@ export function planClaudeCliInvocation({ model, messages, maxTurns, tools }) {
     // expect to pay for. It goes to a file, so its size never matters.
     system: (replayed ? replay.system : system) || CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
     frameCount: replayed ? replay.frames.length : 0,
+    frames: replayed ? replay.frames : null,
     // The content of the turn actually being asked. The admission relay needs
     // it to tell 9Router's own blocks from the per-request context the CLI
     // appends to that same turn — which is where the cache breakpoint must not
@@ -316,6 +330,7 @@ export function resolveClaudeCliModel(model) {
 
 export function buildClaudeCliArgs({
   model, system, systemPromptFile, settingsFile, maxTurns, mcpConfigFile, streamJsonInput,
+  sessionId, resumeId,
 } = {}) {
   const args = [
     "-p",
@@ -331,10 +346,15 @@ export function buildClaudeCliArgs({
     // as a stream that simply stops.
     "--permission-mode", "dontAsk",
     "--disable-slash-commands",
-    // One request is one turn; a saved session would accumulate on the host and
-    // is never resumed, because every request arrives carrying its own history.
-    "--no-session-persistence",
   ];
+  // One request is one turn. Without the session cache nothing is ever
+  // resumed — every request arrives carrying its own history — so a saved
+  // session would only accumulate on the host. With it, the session is the
+  // point: resuming it is what lets the prompt cache hit (claudeCliSessions.js),
+  // and the registry deletes it when it expires.
+  if (resumeId) args.push("--resume", resumeId);
+  else if (sessionId) args.push("--session-id", sessionId);
+  else args.push("--no-session-persistence");
   // History goes in as real turns rather than a transcript pasted into one
   // prompt — see claudeCliReplay.js.
   if (streamJsonInput) args.push("--input-format", "stream-json");
@@ -415,10 +435,28 @@ function usagePayload(usage) {
     + (usage.cache_creation_input_tokens || 0)
     + (usage.cache_read_input_tokens || 0);
   const completionTokens = usage.output_tokens || 0;
+  // Summed into prompt_tokens for compatibility, and also named, because a sum
+  // alone hides whether the prompt cache hit at all — which is the one thing
+  // worth knowing about a long conversation on this provider. The names are
+  // the ones openai-to-claude.js already reads back into cache_read/creation.
+  const details = {};
+  if (Number.isFinite(usage.cache_read_input_tokens)) details.cached_tokens = usage.cache_read_input_tokens;
+  if (Number.isFinite(usage.cache_creation_input_tokens)) details.cache_creation_tokens = usage.cache_creation_input_tokens;
   return {
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
     total_tokens: promptTokens + completionTokens,
+    ...(Object.keys(details).length ? { prompt_tokens_details: details } : {}),
+  };
+}
+
+/** One log-friendly line of what the prompt cache did for a turn. */
+export function cacheUsageSummary(usage) {
+  if (!usage) return null;
+  return {
+    input: usage.input_tokens || 0,
+    cacheRead: usage.cache_read_input_tokens || 0,
+    cacheCreate: usage.cache_creation_input_tokens || 0,
   };
 }
 
@@ -808,6 +846,136 @@ export function claudeCliGateStats() {
  * `result.status`, and a 200 also disappears entirely for Claude- and
  * Gemini-format clients, whose translators drop choice-less frames.
  */
+/**
+ * Whether this request continues a session this process started, and how to
+ * run it either way (see claudeCliSessions.js for why this is what keeps the
+ * prompt cache alive).
+ *
+ * null when the session cache is off or the request cannot take part: a
+ * flattened prompt has no turns to resume, and a conversation that does not
+ * end on something to answer has nothing to continue.
+ *
+ * A hit resumes the session with the newest turn alone; a miss runs the whole
+ * conversation exactly as before, only under a session id, so that the turn
+ * after it can hit.
+ */
+async function planClaudeCliSession({ invocation, messages, model, account, log }) {
+  if (!sessionCacheEnabled() || !invocation.replayed || !invocation.frames?.length) return null;
+  const split = splitQueryFrame(messages);
+  if (!split || !split.query.length) return null;
+
+  const registry = sharedSessionRegistry();
+  if (registry.disabled) return null;
+  const configDir = sessionConfigDir(account);
+  registry.sweepOrphans(configDir);
+  // The host's own login has no key of its own; its config directory is one.
+  const accountKey = rateLimitAccountKey(account) || `host:${configDir}`;
+  const keyParts = { accountKey, model, system: invocation.system, manifest: invocation.manifest };
+  const systemHash = crypto.createHash("sha256").update(String(invocation.system ?? "")).digest("hex");
+  const argsFor = (ids) => buildClaudeCliArgs({
+    model, maxTurns: CLAUDE_CLI_DEFAULT_MAX_TURNS, streamJsonInput: true, ...ids,
+  });
+
+  const fresh = () => {
+    const sessionId = crypto.randomUUID();
+    // Beneath resolveSpawnCwd(): private to this process, and the mark the
+    // cleanup looks for in the CLI's encoded project directory.
+    const cwd = path.join(resolveSpawnCwd(), "sessions", sessionId);
+    fs.mkdirSync(cwd, { recursive: true });
+    const entry = registry.begin({ sessionId, cwd, configDir, accountKey });
+    // The history the client sent, written as the transcript the CLI will
+    // resume, so it reaches the model in order rather than folded into the
+    // newest turn (transcriptSeed). The newest turn alone goes on stdin. When
+    // the conversation cannot be seeded — a tool result is the query — it
+    // runs as today: every frame on stdin, under a fresh session id.
+    const seed = transcriptSeed(invocation.frames);
+    if (seed) {
+      const projectDir = sessionProjectDir(configDir, cwd);
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), transcriptRecords(seed.seed, { sessionId, cwd: fs.realpathSync(cwd) }));
+      return { mode: "seeded", entry, args: argsFor({ resumeId: sessionId }), stdin: framesToStdin([seed.query]) };
+    }
+    return { mode: "new", entry, args: argsFor({ sessionId }), stdin: invocation.stdin };
+  };
+
+  let run;
+  // A tool result answers a call the CLI has already answered for itself in
+  // the transcript (see resultOk); it can only be replayed, never resumed.
+  const queryIsToolResult = split.query.some((m) => m?.role === "tool" || m?.role === "function");
+  let found = queryIsToolResult ? null : registry.take(sessionCacheKey({ ...keyParts, messages: split.history }));
+  if (found?.ready) {
+    // The previous turn's interpreter may still be exiting. Bounded: a child
+    // that never exits must not hold this request, and a session read while
+    // its writer runs is still a session the CLI can resume.
+    // Long enough for settleChild to have killed a child that would not go;
+    // if it still has not, two writers on one transcript is worse than a miss.
+    const exitedInTime = await Promise.race([
+      found.ready.then(() => true),
+      new Promise((r) => { const t = setTimeout(() => r(false), CLAUDE_CLI_EXIT_GRACE_MS * 2 + 1000); if (t.unref) t.unref(); }),
+    ]);
+    if (!exitedInTime || !sessionFileExists(found)) {
+      registry.discard(found);
+      found = null;
+    }
+  }
+  if (found) {
+    // A resume must run where the session was written: the CLI files sessions
+    // by working directory.
+    try {
+      fs.mkdirSync(found.cwd, { recursive: true });
+    } catch (e) {
+      registry.discard(found);
+      throw e;
+    }
+    run = {
+      mode: "resumed",
+      entry: found,
+      args: argsFor({ resumeId: found.sessionId }),
+      // Only the newest turn. The rest is in the session, as the CLI itself
+      // recorded it — which is the whole point.
+      stdin: framesToStdin([invocation.frames.at(-1)]),
+    };
+  } else {
+    if (split.history.length
+      && registry.systemChanged(conversationKey({ accountKey, model, messages: split.history }), systemHash)) {
+      // The commonest reason a conversation that should continue does not: a
+      // client that stamps the time, or anything else per-request, into its
+      // system prompt. Nothing here can fix that; saying so is the help.
+      log?.info?.("CLAUDE-CLI", "session: system-changed — same conversation, different system prompt; a new session starts");
+    }
+    run = fresh();
+  }
+
+  const session = {
+    ...run,
+    registry,
+    /**
+     * The session to resume was gone after all — or the transcript this
+     * process seeded was refused: start one with the whole conversation on
+     * stdin, the way it has always run.
+     */
+    restartFresh() {
+      registry.discard(session.entry);
+      const sessionId = crypto.randomUUID();
+      const cwd = path.join(resolveSpawnCwd(), "sessions", sessionId);
+      fs.mkdirSync(cwd, { recursive: true });
+      const entry = registry.begin({ sessionId, cwd, configDir, accountKey });
+      Object.assign(session, { mode: "fallback", entry, args: argsFor({ sessionId }), stdin: invocation.stdin });
+      return session;
+    },
+    /** The turn completed: continue under the conversation as the client will send it next. */
+    remember(answer, promptTokens, ready) {
+      const next = [...split.history, ...split.query, answer];
+      registry.remember(
+        sessionCacheKey({ ...keyParts, messages: next }),
+        { ...session.entry, promptTokens },
+        { conversation: conversationKey({ accountKey, model, messages: next }), systemHash, ready },
+      );
+    },
+  };
+  return session;
+}
+
 function errorResponse(message, code, status = 503) {
   const body = sseChunk({ error: { message, type: "claude_cli_error", code } }) + SSE_DONE;
   return new Response(body, { status, headers: SSE_HEADERS });
@@ -941,6 +1109,18 @@ export class ClaudeCliExecutor extends BaseExecutor {
     // After the slot, deliberately: a request that queues out or is abandoned
     // never spawns, so it should never leave a directory behind either.
     const requestFiles = writeRequestFiles({ ...invocation, extraBody, log });
+    // Decided after the slot for the same reason: a request that never runs
+    // must not hold a session another request could have resumed.
+    let session = null;
+    try {
+      session = await planClaudeCliSession({
+        invocation, messages, model, account: credentials?.providerSpecificData || {}, log,
+      });
+    } catch (e) {
+      // A cache is never worth a failed request.
+      log?.info?.("CLAUDE-CLI", `session cache unavailable (${e.message}); running without it`);
+      session = null;
+    }
     // Once per request, on every path that can end it.
     //
     // Retried once, because the MCP server is a grandchild: it exits when the
@@ -954,9 +1134,17 @@ export class ClaudeCliExecutor extends BaseExecutor {
     // identical input reads 40k of cache, input differing by one word reads
     // none. See claudeCliAdmission.js.
     let admission = null;
-    if (invocation.queried && cacheRelayEnabled()) {
+    if (session && cacheRelayEnabled()) {
+      // Both on: the session cache already makes the prefix recur, and it does
+      // so without touching what the CLI sends. The relay would only add a hop.
+      log?.info?.("CLAUDE-CLI", "cache relay skipped: the session cache is on for this request");
+    }
+    if (invocation.queried && cacheRelayEnabled() && !session) {
       try {
-        admission = await startAdmission({ queried: invocation.queried });
+        admission = await startAdmission({
+          queried: invocation.queried,
+          ...(upstreamOverride() ? { upstream: upstreamOverride() } : {}),
+        });
       } catch (e) {
         // Routing straight to the API still answers; it just answers slowly.
         log?.info?.("CLAUDE-CLI", `cache relay unavailable (${e.message}); prompt caching will not apply`);
@@ -990,7 +1178,17 @@ export class ClaudeCliExecutor extends BaseExecutor {
     else if (invocation.system) extraArgs.push("--system-prompt", invocation.system);
     if (requestFiles?.settingsPath) extraArgs.push("--settings", requestFiles.settingsPath);
     if (requestFiles?.configPath) extraArgs.push("--mcp-config", requestFiles.configPath);
-    const plan = extraArgs.length ? buildSpawnPlan(bin, [...invocation.args, ...extraArgs]) : basePlan;
+    const runArgs = session ? session.args : invocation.args;
+    const plan = extraArgs.length || session ? buildSpawnPlan(bin, [...runArgs, ...extraArgs]) : basePlan;
+    // A session runs in its own directory, where the CLI files it; everything
+    // else in this request's, so nothing it writes outlives it.
+    const spawnCwd = () => session?.entry.cwd || requestFiles?.dir || resolveSpawnCwd();
+    if (session) {
+      log?.info?.("CLAUDE-CLI", `session=${session.mode} id=${session.entry.sessionId.slice(0, 8)}`
+        + (session.mode === "resumed" ? ", newest turn only"
+          : session.mode === "seeded" ? `, history seeded as transcript (${invocation.frameCount - 1} turns), newest turn only`
+            : ", whole conversation"));
+    }
 
     const ctx = createClaudeCliContext({
       toolNames: toolNameMap(invocation.manifest),
@@ -1004,33 +1202,44 @@ export class ClaudeCliExecutor extends BaseExecutor {
     // "error" (ENOENT for a missing install) before anything is streamed, so a
     // failure here can still become a real HTTP status instead of a 200 whose
     // only error signal is an SSE frame a Claude-format client would drop.
-    let child;
-    try {
-      child = spawn(plan.command, plan.args, {
-        env: {
-          ...buildChildEnv(process.env, credentials?.providerSpecificData),
-          ...(admission ? { ANTHROPIC_BASE_URL: admission.url } : {}),
-          ...(tokenCeiling ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: tokenCeiling } : {}),
-        },
-        // This request's own directory when it has one, so nothing it writes
-        // outlives it. Never the 9Router process cwd, and never a shared temp
-        // dir — see resolveSpawnCwd for why it has to be one we created.
-        cwd: requestFiles?.dir || resolveSpawnCwd(),
+    const childEnv = {
+      ...buildChildEnv(process.env, credentials?.providerSpecificData),
+      // The relay when it is on; otherwise, only in a test harness, the
+      // local stand-in for the API (see upstreamOverride).
+      ...(admission
+        ? { ANTHROPIC_BASE_URL: admission.url }
+        : (upstreamOverride() ? { ANTHROPIC_BASE_URL: upstreamOverride() } : {})),
+      ...(tokenCeiling ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: tokenCeiling } : {}),
+    };
+    // A function because a resumed session that turns out to be gone is run
+    // again, fresh, inside the same request (see retryFresh below).
+    const launch = async (spawnPlan, cwd) => {
+      const started = spawn(spawnPlan.command, spawnPlan.args, {
+        env: childEnv,
+        // Never the 9Router process cwd, and never a shared temp dir — see
+        // resolveSpawnCwd for why it has to be one we created.
+        cwd,
         stdio: ["pipe", "pipe", "pipe"],
         // Leads its own process group, so killClaudeCliTree can reach the MCP
         // server and anything else the interpreter starts. Not on Windows,
         // where detaching would open a console window; taskkill /T walks the
         // tree there without one.
         detached: process.platform !== "win32",
-        ...plan.options,
+        ...spawnPlan.options,
       });
       await new Promise((resolve, reject) => {
-        child.once("spawn", resolve);
-        child.once("error", reject);
+        started.once("spawn", resolve);
+        started.once("error", reject);
       });
+      return started;
+    };
+    let child;
+    try {
+      child = await launch(plan, spawnCwd());
     } catch (err) {
       releaseSlot();
       cleanupToolFiles();
+      if (session) session.registry.discard(session.entry);
       const notFound = err?.code === "ENOENT" || /ENOENT|not found/i.test(err?.message || "");
       log?.info?.("CLAUDE-CLI", `spawn failed for ${bin}: ${err?.message}`);
       return {
@@ -1060,6 +1269,29 @@ export class ClaudeCliExecutor extends BaseExecutor {
       start(controller) {
         const encoder = new TextEncoder();
         let closed = false;
+        // What the session cache needs from this turn: whether it completed,
+        // and what the client was sent — the conversation it will send back.
+        const recorder = createAnswerRecorder();
+        let resultOk = false;
+        let aborted = false;
+        let resumeMissing = false;
+        let retried = false;
+        let sessionSettled = false;
+        // Settles when the last child of this request has exited; a request
+        // resuming this session waits for it.
+        let markExited;
+        const exited = new Promise((resolve) => { markExited = resolve; });
+        const settleSession = () => {
+          if (!session || sessionSettled) return;
+          sessionSettled = true;
+          if (resultOk && !aborted) {
+            const u = ctx.usage || {};
+            const prompt = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+            session.remember(recorder.message(), prompt, exited);
+          } else {
+            session.registry.discard(session.entry);
+          }
+        };
         // The consumer can cancel the body at any time (client disconnect, stall
         // handling); enqueueing into a cancelled controller throws synchronously
         // from inside a stdout listener, which would be an uncaught exception.
@@ -1103,6 +1335,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
         // Exposed to cancel() below, which runs outside this closure.
         streamTeardown = () => {
           closed = true;
+          if (!resultOk) aborted = true;
           // Runs after start() has finished, so the timer helpers below exist.
           clearIdleTimer();
           settleChild({ now: true });
@@ -1112,6 +1345,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
         const resetIdleTimer = () => {
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
+            aborted = true;
             fail(`Claude CLI produced no output for ${CLAUDE_CLI_IDLE_TIMEOUT_MS}ms`, "idle_timeout");
             settleChild({ now: true });
           }, CLAUDE_CLI_IDLE_TIMEOUT_MS);
@@ -1120,6 +1354,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
         const clearIdleTimer = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } };
 
         const onAbort = () => {
+          if (!resultOk) aborted = true;
           clearIdleTimer();
           settleChild({ now: true });
           finish();
@@ -1131,99 +1366,230 @@ export class ClaudeCliExecutor extends BaseExecutor {
         // request — left the child to run to completion holding a slot.
         if (signal?.aborted) onAbort();
 
-        // The process already started (awaited above); this only catches a late
-        // runtime error on the child handle.
-        let spawnFailed = false;
-        child.on("error", (err) => {
-          spawnFailed = true;
-          clearIdleTimer();
-          freeSlot();
-          // No "close" follows a handle that never really started, so the
-          // request's directory has to be given back from here too.
-          cleanupToolFiles();
-          log?.info?.("CLAUDE-CLI", `child error: ${err.message}`);
-          fail("Claude CLI failed while running on the 9Router host.", "child_error");
-        });
-
-        let stdoutBuffer = "";
-        let stderrTail = "";
-        let sawResult = false;
-
-        // Runs inside a stdout listener, where a throw is an uncaught exception
-        // that takes the whole server down — every other request with it — for
-        // one line this version of the CLI happens to shape differently.
-        const handleLine = (line) => {
-          try { handleEvent(line); } catch (e) {
-            log?.info?.("CLAUDE-CLI", `unreadable stream line ignored: ${e.message}`);
-          }
-        };
-
-        const handleEvent = (line) => {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed[0] !== "{") return;
-          let event;
-          try { event = JSON.parse(trimmed); } catch { return; }
-          // The subscription's own 5h/7d windows, which the CLI reports on
-          // every request. For an account whose credential the usage endpoint
-          // refuses — anything from `claude setup-token` — this is the only
-          // place they appear at all.
-          if (event.type === "rate_limit_event") {
-            recordRateLimitEvent(credentials?.providerSpecificData, event.rate_limit_info);
-          }
-          const { frames, finished } = translateClaudeCliEvent(event, ctx);
-          for (const frame of frames) emit(frame);
-          if (finished) {
-            sawResult = true;
+        // Everything that watches one child. A function because a resumed
+        // session that turns out to be gone is replaced by a fresh child
+        // within the same request, and that one is watched the same way.
+        const attach = (c, input) => {
+          // The process already started (awaited above); this only catches a late
+          // runtime error on the child handle.
+          let spawnFailed = false;
+          c.on("error", (err) => {
+            spawnFailed = true;
             clearIdleTimer();
+            freeSlot();
+            // No "close" follows a handle that never really started, so the
+            // request's directory has to be given back from here too.
+            cleanupToolFiles();
+            settleSession();
+            markExited();
+            log?.info?.("CLAUDE-CLI", `child error: ${err.message}`);
+            fail("Claude CLI failed while running on the 9Router host.", "child_error");
+          });
+
+          let stdoutBuffer = "";
+          let stderrTail = "";
+          let sawResult = false;
+
+          // Runs inside a stdout listener, where a throw is an uncaught exception
+          // that takes the whole server down — every other request with it — for
+          // one line this version of the CLI happens to shape differently.
+          const handleLine = (line) => {
+            try { handleEvent(line); } catch (e) {
+              log?.info?.("CLAUDE-CLI", `unreadable stream line ignored: ${e.message}`);
+            }
+          };
+
+          const handleEvent = (line) => {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed[0] !== "{") return;
+            let event;
+            try { event = JSON.parse(trimmed); } catch { return; }
+            // The subscription's own 5h/7d windows, which the CLI reports on
+            // every request. For an account whose credential the usage endpoint
+            // refuses — anything from `claude setup-token` — this is the only
+            // place they appear at all.
+            if (event.type === "rate_limit_event") {
+              recordRateLimitEvent(credentials?.providerSpecificData, event.rate_limit_info);
+            }
+            // A resume of a session that is not there. The CLI says so before any
+            // model call; nothing has reached the client, so the request can
+            // still be answered in full — see retryFresh.
+            if ((session?.mode === "resumed" || session?.mode === "seeded") && !retried && !ctx.roleSent
+              && event.type === "result" && event.is_error === true
+              && /no conversation found/i.test(`${(event.errors || []).join(" ")} ${event.result || ""}`)) {
+              resumeMissing = true;
+              return;
+            }
+            const { frames, finished } = translateClaudeCliEvent(event, ctx);
+            for (const frame of frames) {
+              if (session) recorder.frame(frame);
+              emit(frame);
+            }
+            if (finished && event.type === "result") {
+              // Completed the way the client can continue from: an answer, a
+              // proposed call, or an answer a ceiling cut short.
+              // Only a turn the client actually received an answer to: an
+              // empty turn is delivered as an error text the client should not
+              // be continuing from.
+              //
+              // And never a turn that proposed a tool call. Measured on
+              // 2.1.281: under --permission-mode dontAsk the CLI answers its
+              // own call in the transcript with a tool_result "Permission …
+              // denied", and a resumed turn carrying the client's real result
+              // for that tool_use_id is dropped as a duplicate — the model is
+              // asked "(no content)" and answers about the denial. The tool
+              // result has to run as a fresh replay, which pairs it correctly.
+              const delivered = ctx.sentAnswer && !ctx.sawToolCall;
+              resultOk = delivered && (event.is_error !== true
+                || ctx.stopReason === "max_tokens"
+                || (ctx.tokenCeiling && event.stop_reason === "stop_sequence"));
+              // Here rather than at exit: the request record is built when the
+              // stream finishes, which is before the child has gone.
+              const cacheNow = cacheUsageSummary(ctx.usage);
+              if (invocation.shape && typeof invocation.shape === "object") {
+                if (cacheNow) invocation.shape.cache = cacheNow;
+                if (session) invocation.shape.session = session.mode;
+              }
+            }
+            // Remembered as soon as the answer is whole — see registry.remember.
+            if (finished && resultOk) settleSession();
+            if (finished) {
+              sawResult = true;
+              clearIdleTimer();
+              finish();
+              settleChild();
+            }
+          };
+
+          c.stdout.setEncoding("utf8");
+          c.stdout.on("data", (data) => {
+            resetIdleTimer();
+            stdoutBuffer += data;
+            let index;
+            while ((index = stdoutBuffer.indexOf("\n")) >= 0) {
+              const line = stdoutBuffer.slice(0, index);
+              stdoutBuffer = stdoutBuffer.slice(index + 1);
+              handleLine(line);
+            }
+          });
+
+          c.stderr.setEncoding("utf8");
+          c.stderr.on("data", (data) => {
+            stderrTail = (stderrTail + data).slice(-2000);
+          });
+
+          c.on("close", (code) => {
+            clearIdleTimer();
+            if (stdoutBuffer.trim()) { handleLine(stdoutBuffer); stdoutBuffer = ""; }
+            // Any resume that ended before answering and before the client saw
+            // anything: the measured "no conversation found", or whatever a
+            // corrupted transcript or a reworded message produces instead.
+            if ((session?.mode === "resumed" || session?.mode === "seeded") && !retried && !closed && !sawResult && !ctx.roleSent) {
+              if (!resumeMissing && stderrTail.trim()) log?.info?.("CLAUDE-CLI", `resume failed: ${stderrTail.trim().slice(-300)}`);
+              retried = true;
+              retryFresh();
+              return;
+            }
+            // The relay never answers in the upstream's place, so a transport
+            // failure reaches the child as a dropped connection and nothing else.
+            // This is the only place it can be named.
+            // Off by default, so this only speaks when someone turned it on.
+            const relay = admission?.stats?.();
+            if (relay) log?.info?.("CLAUDE-CLI", `cache relay ${JSON.stringify(relay)}`);
+            // What the prompt cache did. Without this a cache that quietly stops
+            // hitting — a CLI update, a client that stamps the time into its
+            // system prompt — looks exactly like one that works.
+            const cache = cacheUsageSummary(ctx.usage);
+            if (cache) {
+              recordCacheUsage(credentials?.providerSpecificData, ctx.usage);
+              log?.info?.("CLAUDE-CLI",
+                `cache_read=${cache.cacheRead} cache_create=${cache.cacheCreate} input=${cache.input}`
+                + (session ? ` session=${session.mode}` : ""));
+              // A resumed turn that read back little of what came before means
+              // the prefix stopped recurring — a CLI whose policy changed, most
+              // likely. One line per turn, so a run of them is visible.
+              const before = session?.mode === "resumed" ? session.entry.promptTokens : 0;
+              if (before && cache.cacheRead < 0.2 * before) {
+                log?.info?.("CLAUDE-CLI", `cache-miss-on-resume: read ${cache.cacheRead} of a ${before}-token prefix`);
+              }
+            }
+            for (const timer of exitTimers) clearTimeout(timer);
+            exitTimers.length = 0;
+            freeSlot();
+            cleanupToolFiles();
+            signal?.removeEventListener?.("abort", onAbort);
+            settleSession();
+            markExited();
+            // The transcript this turn wrote has to be where the next turn will
+            // look for it. Measured on 2.1.281 for macOS; a platform or CLI that
+            // files it elsewhere would otherwise miss on every turn and leave a
+            // transcript per turn behind, with nothing in the log.
+            if (session && (session.mode === "new" || session.mode === "fallback") && resultOk && !aborted
+              && !session.registry.disabled && !sessionFileExists(session.entry)) {
+              const reason = `session transcript not found under ${session.entry.projectDir || session.entry.configDir}`;
+              session.registry.disable(reason);
+              log?.info?.("CLAUDE-CLI", `session cache disabled for this process: ${reason}. `
+                + "The CLI files sessions somewhere this build does not expect; "
+                + `one transcript for session ${session.entry.sessionId} remains under ${session.entry.configDir}.`);
+            }
+            if (closed || spawnFailed) return;
+            if (!sawResult) {
+              // stderr can carry config dumps and credential paths — log it, don't ship it.
+              if (stderrTail.trim()) log?.info?.("CLAUDE-CLI", `stderr: ${stderrTail.trim()}`);
+              fail(`Claude CLI exited with code ${code} before completing`, "exited_early");
+              return;
+            }
             finish();
-            settleChild();
-          }
+          });
+
+          resetIdleTimer();
+          c.stdin.on("error", () => { /* child died first — close handler reports it */ });
+          c.stdin.end(input);
         };
 
-        child.stdout.setEncoding("utf8");
-        child.stdout.on("data", (data) => {
-          resetIdleTimer();
-          stdoutBuffer += data;
-          let index;
-          while ((index = stdoutBuffer.indexOf("\n")) >= 0) {
-            const line = stdoutBuffer.slice(0, index);
-            stdoutBuffer = stdoutBuffer.slice(index + 1);
-            handleLine(line);
-          }
-        });
-
-        child.stderr.setEncoding("utf8");
-        child.stderr.on("data", (data) => {
-          stderrTail = (stderrTail + data).slice(-2000);
-        });
-
-        child.on("close", (code) => {
-          clearIdleTimer();
-          // The relay never answers in the upstream's place, so a transport
-          // failure reaches the child as a dropped connection and nothing else.
-          // This is the only place it can be named.
-          // Off by default, so this only speaks when someone turned it on.
-          const relay = admission?.stats?.();
-          if (relay) log?.info?.("CLAUDE-CLI", `cache relay ${JSON.stringify(relay)}`);
-          for (const timer of exitTimers) clearTimeout(timer);
-          exitTimers.length = 0;
-          freeSlot();
-          cleanupToolFiles();
-          signal?.removeEventListener?.("abort", onAbort);
-          if (stdoutBuffer.trim()) handleLine(stdoutBuffer);
-          if (closed || spawnFailed) return;
-          if (!sawResult) {
-            // stderr can carry config dumps and credential paths — log it, don't ship it.
-            if (stderrTail.trim()) log?.info?.("CLAUDE-CLI", `stderr: ${stderrTail.trim()}`);
-            fail(`Claude CLI exited with code ${code} before completing`, "exited_early");
+        // The session to resume was gone (deleted, expired, another process's
+        // cleanup): run the whole conversation fresh, in this request, keeping
+        // the slot. Only ever before anything reached the client, and once.
+        const retryFresh = () => {
+          let next;
+          try {
+            next = session.restartFresh();
+          } catch (e) {
+            // Inside a `close` listener: a throw here is an uncaught exception
+            // that takes the server down.
+            log?.info?.("CLAUDE-CLI", `session fallback could not start (${e.message})`);
+            freeSlot();
+            cleanupToolFiles();
+            signal?.removeEventListener?.("abort", onAbort);
+            settleSession();
+            markExited();
+            fail("Claude CLI could not be started on the 9Router host.", "spawn_failed");
             return;
           }
-          finish();
-        });
+          log?.info?.("CLAUDE-CLI", `session=fallback id=${next.entry.sessionId.slice(0, 8)}: `
+            + "the session to resume was gone; running the whole conversation fresh");
+          launch(buildSpawnPlan(bin, [...next.args, ...extraArgs]), next.entry.cwd)
+            .then((started) => {
+              child = started;
+              // Attached even when the client already left: its close handler
+              // is what gives back the slot, the request files and the abort
+              // listener, exactly once. `closed` keeps anything from reaching
+              // the client.
+              attach(started, next.stdin);
+              if (closed) settleChild({ now: true });
+            })
+            .catch((err) => {
+              log?.info?.("CLAUDE-CLI", `spawn failed for ${bin}: ${err?.message}`);
+              freeSlot();
+              cleanupToolFiles();
+              signal?.removeEventListener?.("abort", onAbort);
+              settleSession();
+              markExited();
+              fail("Claude CLI could not be started on the 9Router host.", "spawn_failed");
+            });
+        };
 
-        resetIdleTimer();
-        child.stdin.on("error", () => { /* child died first — close handler reports it */ });
-        child.stdin.end(stdin);
+        attach(child, session ? session.stdin : stdin);
       },
       // Consumer gave up on the body: stop the interpreter rather than leaking it.
       cancel() {
@@ -1240,6 +1606,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
         bin,
         stdinChars: stdin.length,
         replayedTurns: invocation.replayed ? invocation.frameCount : 0,
+        ...(session ? { session: session.mode } : {}),
         conversation: invocation.shape,
       },
     };

@@ -96,6 +96,27 @@ listening.
 
 `check-k8s-manifests.mjs` fails if either is reverted.
 
+## Prompt-cache sessions (`CLI_CLAUDE_SESSION_CACHE`)
+
+Off by default. When on, conversations are written by Claude Code into
+`$CLAUDE_CONFIG_DIR/projects/` — here the RWX config volume — for the session
+TTL (15 minutes, `CLI_CLAUDE_SESSION_TTL_MS`) and then deleted; plan volume
+space accordingly. The registry of which conversation continues which session
+is process memory, so it assumes one router process per config volume. The
+`Recreate` rollout above already guarantees that; two replicas would not break
+anything, only miss more.
+
+What it cannot fix: a turn that ended in a tool call is never resumed (the CLI
+closes the call in its transcript with a denial, so the client's result would
+be dropped), which means tool-heavy agent loops gain little; the prompt cache
+itself lasts five minutes, so a client
+that pauses longer between turns misses whatever this does; a client that puts
+the time (or anything else per-request) into its system prompt misses every
+turn, and the log says `session: system-changed`; and a Claude Code update can
+change how the CLI places its breakpoint, which would show as
+`cache-miss-on-resume` lines and a falling "Prompt cache" share on the quota
+card. The image pins the CLI version; a desktop host does not.
+
 ## Not verified
 
 - **No image has been built from this tree on the machine that wrote it.** The
