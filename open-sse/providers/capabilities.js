@@ -83,6 +83,26 @@ export function capabilitiesFromServiceKind(kind) {
  * otherwise mis-match. Only declare deltas vs DEFAULT.
  */
 export const MODEL_CAPABILITIES = {
+  // Claude Code CLI rows. Keyed here rather than under the provider, because
+  // the dashboard addresses them through the registry's `ccli` alias
+  // (`ccli/claude-cli-opus-1m`) and a provider-scoped entry is only found
+  // under the canonical id — which is how a 1M model came to be advertised
+  // with the generic 200k default.
+  //
+  // Figures from the CLI's own `modelUsage` report on 2.1.280: every current
+  // Claude model already answers with a 1M window, so the [1m] suffix no
+  // longer changes the size and plain opus was understated too. Only haiku is
+  // smaller. claude-cli-default is left to the floor deliberately — it is
+  // whatever the account is configured for, which this server cannot know.
+  "claude-cli-opus": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
+  "claude-cli-opus-1m": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
+  // Opus plans and Sonnet executes, so the planner's window is the binding one.
+  "claude-cli-opusplan": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
+  "claude-cli-sonnet": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 64000 },
+  "claude-cli-sonnet-1m": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 64000 },
+  "claude-cli-fable": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 64000 },
+  "claude-cli-haiku": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive", contextWindow: 200000, maxOutput: 32000 },
+  "claude-cli-default": { vision: true, reasoning: true, thinkingFormat: "claude-adaptive" },
   // Claude Fable 5.1, Opus 5, 4.6/4.7/4.8, and Kiro Sonnet 5 have 1M context + adaptive thinking (override generic claude pattern)
   "claude-fable-5-1": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 128000 },
   "claude-opus-5":     { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },

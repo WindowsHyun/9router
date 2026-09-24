@@ -12,9 +12,7 @@ import {
 } from "open-sse/executors/claude-cli.js";
 import { getExecutor as getExecutorForGuard } from "open-sse/executors/index.js";
 import {
-  CLAUDE_CLI_INLINE_SYSTEM_PROMPT,
   CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
-  claudeCliArgvBudget,
   resolveClaudeCliMaxTurns,
   CLAUDE_CLI_DEFAULT_MAX_TURNS,
   CLAUDE_CLI_MAX_TURNS_LIMIT,
@@ -53,8 +51,15 @@ describe("claude-cli prompt building", () => {
       { role: "tool", tool_call_id: "c1", content: "a.txt" },
     ]);
     expect(prompt).toContain("lookhere");
-    expect(prompt).toContain("[Tool call ls id=c1]");
-    expect(prompt).toContain("[Tool result id=c1]\na.txt");
+    // Described rather than marked: a model that reads a bracketed
+    // "[Tool call ...]" in its own history imitates it, writing the marker as
+    // text instead of proposing a call — which leaves the client waiting for
+    // one that never comes. This form is only reached when the conversation
+    // cannot be replayed as turns at all.
+    expect(prompt).toContain("the assistant used the ls tool");
+    expect(prompt).toContain("that tool returned: a.txt");
+    expect(prompt).not.toContain("[Tool call");
+    expect(prompt).not.toContain("[Tool result");
   });
 
   it("treats developer role as system", () => {
@@ -129,6 +134,26 @@ describe("claude-cli stream translation", () => {
     expect(parsed[0].usage).toEqual({ prompt_tokens: 15, completion_tokens: 3, total_tokens: 18 });
   });
 
+  // Cache *writes* are the expensive input, and they arrive under their own
+  // name. Leaving them out under-reports exactly the request that cost the
+  // most, on the screen the operator checks the cost on.
+  it("counts cache creation as input, not as nothing", () => {
+    const c = ctx();
+    const parsed = parseFrames(translateClaudeCliEvent({
+      type: "result",
+      subtype: "success",
+      result: "done",
+      usage: {
+        input_tokens: 10,
+        cache_creation_input_tokens: 2000,
+        cache_read_input_tokens: 5,
+        output_tokens: 3,
+      },
+    }, c).frames);
+    expect(parsed.at(-1).usage)
+      .toEqual({ prompt_tokens: 2015, completion_tokens: 3, total_tokens: 2018 });
+  });
+
   it("maps max_tokens stop reason to length", () => {
     const c = ctx();
     translateClaudeCliEvent({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "max_tokens" } } }, c);
@@ -156,9 +181,15 @@ describe("claude-cli stream translation", () => {
     );
     const parsed = parseFrames(frames);
     expect(finished).toBe(true);
-    expect(parsed).toHaveLength(1);
     expect(parsed[0].error.code).toBe("upstream_error");
     expect(parsed[0].error.message).toContain("529");
+    // And again as content, because the error frame alone reaches only an
+    // OpenAI-format client: openaiToClaudeResponse drops any chunk without
+    // choices[0], so for a Claude- or Gemini-format client the stream would
+    // simply have ended with nothing said.
+    expect(parsed[1].choices[0].delta.content).toContain("529");
+    expect(parsed[1].choices[0].delta.role).toBe("assistant");
+    expect(parsed.at(-1).choices[0].finish_reason).toBe("stop");
   });
 
   it("ignores hook/system noise", () => {
@@ -210,63 +241,67 @@ describe("claude-cli non-streaming conversion", () => {
   });
 });
 
-// Windows caps a command line at 32,767 chars — measured on claude 2.1.278, a
-// 30k --system-prompt works and 40k dies with ENAMETOOLONG. Coding agents send
-// system prompts in that range, so the oversized case must not reach argv.
-describe("claude-cli argv budget", () => {
-  const argvLength = (args) => args.join(" ").length;
+// Windows caps a command line at 32,767 chars and a coding agent's system
+// prompt runs past it, so nothing large goes on argv: the plan carries the text
+// and the executor writes it to a file for --system-prompt-file.
+//
+// Measured on 2.1.280, the file is read with the same authority as the flag —
+// a benign instruction was followed 3/3 either way, a 37k prompt that could
+// never have fitted on argv was followed, and its prefix cached between
+// requests. (An earlier reading of one adversarial sample said otherwise; the
+// model was refusing the instruction's content, not the delivery.)
+describe("claude-cli system prompt", () => {
   const bigSystem = "S".repeat(40000);
 
-  // Without an explicit --system-prompt the CLI applies Claude Code's own agent
+  // Without an explicit system prompt the CLI applies Claude Code's own agent
   // prompt: measured 8,385 prompt tokens for a one-line request versus 429 with
   // one, plus a coding-agent persona an API caller never asked for.
-  it("always sends a system prompt, even when the request has no system message", () => {
+  it("always carries a system prompt, even when the request has no system message", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "user", content: "hi" }],
-      platform: "win32",
     });
-    const value = plan.args[plan.args.indexOf("--system-prompt") + 1];
-    expect(plan.args).toContain("--system-prompt");
-    expect(value).toBe(CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT);
-    expect(value.length).toBeGreaterThan(0);
+    expect(plan.system).toBe(CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT);
   });
 
   it("prefers the caller's system message over the default", () => {
     const plan = planClaudeCliInvocation({
       model: "claude-cli-haiku",
       messages: [{ role: "system", content: "Be terse." }, { role: "user", content: "hi" }],
-      platform: "win32",
     });
-    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
+    expect(plan.system).toBe("Be terse.");
   });
 
-  it("keeps a normal system prompt on argv for full fidelity", () => {
-    const plan = planClaudeCliInvocation({
-      model: "claude-cli-haiku",
-      messages: [{ role: "system", content: "Be terse." }, { role: "user", content: "hi" }],
-      platform: "win32",
-    });
-    expect(plan.inlinedSystem).toBe(false);
-    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
-    expect(plan.prompt).toBe("hi");
+  it("keeps it off argv whatever its size, and out of the turn", () => {
+    for (const system of ["Be terse.", bigSystem]) {
+      const plan = planClaudeCliInvocation({
+        model: "claude-cli-haiku",
+        messages: [{ role: "system", content: system }, { role: "user", content: "hi" }],
+      });
+      expect(plan.args).not.toContain("--system-prompt");
+      expect(plan.args).not.toContain(system);
+      expect(plan.system).toBe(system);
+      // No longer smuggled into the conversation either.
+      expect(plan.stdin).not.toContain(system);
+    }
   });
 
-  it("moves an oversized system prompt into stdin instead of argv", () => {
-    const plan = planClaudeCliInvocation({
-      model: "claude-cli-haiku",
-      messages: [{ role: "system", content: bigSystem }, { role: "user", content: "hi" }],
-      platform: "win32",
-    });
-    expect(plan.inlinedSystem).toBe(true);
-    expect(argvLength(plan.args)).toBeLessThan(claudeCliArgvBudget("win32"));
-    expect(plan.args).not.toContain(bigSystem);
-    expect(plan.args[plan.args.indexOf("--system-prompt") + 1]).toBe(CLAUDE_CLI_INLINE_SYSTEM_PROMPT);
-    // The instructions still reach the model, and still replace Claude Code's default prompt.
-    expect(plan.prompt.startsWith(`[System]\n${bigSystem}`)).toBe(true);
-    expect(plan.prompt).toContain("[User]\nhi");
+  it("puts it on argv only when the caller hands the builder text directly", () => {
+    const args = buildClaudeCliArgs({ model: "claude-cli-haiku", system: "sys" });
+    expect(args[args.indexOf("--system-prompt") + 1]).toBe("sys");
+
+    const fromFile = buildClaudeCliArgs({ model: "claude-cli-haiku", systemPromptFile: "/tmp/system.md" });
+    expect(fromFile[fromFile.indexOf("--system-prompt-file") + 1]).toBe("/tmp/system.md");
+    expect(fromFile).not.toContain("--system-prompt");
   });
 
+  it("passes a settings file when there is one, and none when there is not", () => {
+    expect(buildClaudeCliArgs({ model: "claude-cli-haiku" })).not.toContain("--settings");
+    const args = buildClaudeCliArgs({ model: "claude-cli-haiku", settingsFile: "/tmp/settings.json" });
+    expect(args[args.indexOf("--settings") + 1]).toBe("/tmp/settings.json");
+  });
+
+  
   it("identifies .cmd/.bat shims, which cannot be executed directly", () => {
     expect(isShimPath("C:/npm/claude.cmd", "win32")).toBe(true);
     expect(isShimPath("C:/npm/claude.bat", "win32")).toBe(true);
@@ -350,6 +385,75 @@ describe("claude-cli child environment", () => {
       expect(env[leaked]).toBeUndefined();
     }
   });
+
+  // Which account runs the request. Getting this wrong is invisible: the
+  // request still succeeds, on the *default* account — wrong subscription
+  // billed, wrong quota card, and the connection the operator attached never
+  // used at all.
+  it("pins the account's config directory", () => {
+    const env = __testables.buildChildEnv({ PATH: "/usr/bin" }, { configDir: "/home/u/.claude-work" });
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/home/u/.claude-work");
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it("pins the account's setup token, which is the only kind a container has", () => {
+    const env = __testables.buildChildEnv({ PATH: "/usr/bin" }, { oauthToken: "sk-ant-oat01-x" });
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-x");
+  });
+
+  it("lets the token win when an account carries both", () => {
+    const env = __testables.buildChildEnv({ PATH: "/usr/bin" },
+      { configDir: "/home/u/.claude", oauthToken: "sk-ant-oat01-x" });
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-x");
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/home/u/.claude");
+  });
+
+  // Both credential names are on the allowlist, so a host that has one in its
+  // own environment was handing it to every child — and a token beats a config
+  // directory, so an account attached by directory silently ran as the host's.
+  it("does not let the host's own login override a pinned account", () => {
+    const hostEnv = { PATH: "/usr/bin", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-host" };
+    const env = __testables.buildChildEnv(hostEnv, { configDir: "/home/u/.claude-work" });
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/home/u/.claude-work");
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it("does not let the host's own config directory sit beside a pinned token", () => {
+    const hostEnv = { PATH: "/usr/bin", CLAUDE_CONFIG_DIR: "/root/.claude" };
+    const env = __testables.buildChildEnv(hostEnv, { oauthToken: "sk-ant-oat01-x" });
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-x");
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it("still uses the host's login when no account pins one", () => {
+    // The desktop case: one installed Claude Code, already signed in.
+    const env = __testables.buildChildEnv(
+      { PATH: "/usr/bin", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-host" }, {},
+    );
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-host");
+  });
+
+  it("pins neither for an account that names neither, rather than a blank one", () => {
+    // A blank CLAUDE_CONFIG_DIR is not "the default account" to the CLI.
+    for (const account of [{}, undefined, { configDir: "   ", oauthToken: "" }]) {
+      const env = __testables.buildChildEnv({ PATH: "/usr/bin" }, account);
+      expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    }
+  });
+
+  // The CLI retrying upstream inside somebody's API request bills the
+  // subscription twice for one answer, and 9Router already drives its own
+  // account fallback on the result.
+  it("stops the child retrying on its own", () => {
+    expect(__testables.buildChildEnv({ PATH: "/usr/bin" }).CLAUDE_CODE_MAX_RETRIES).toBe("0");
+  });
+
+  it("stops the child compacting the conversation it was given", () => {
+    const env = __testables.buildChildEnv({ PATH: "/usr/bin" });
+    expect(env.DISABLE_AUTO_COMPACT).toBe("1");
+    expect(env.DISABLE_COMPACT).toBe("1");
+  });
 });
 
 // `--model` is request-controlled (passthroughModels) and on the .cmd path it
@@ -421,13 +525,18 @@ describe("claude-cli exposes the models the CLI actually accepts", () => {
     expect(resolveClaudeCliModel("claude-cli-opusplan")).toBe("opusplan");
   });
 
-  it("declares the 1M rows with a 1M context window, not 200k", async () => {
+  it("declares the windows the CLI reports, not the ones the alias suggests", async () => {
+    // Measured from the CLI's own `modelUsage` on 2.1.280: every current Claude
+    // model already answers with a 1M window, so the [1m] suffix no longer
+    // changes the size and plain opus is not 200k. Only haiku is smaller.
     const registry = await import("open-sse/providers/registry/claude-cli.js");
     const models = registry.default?.models || registry.models;
     const byId = Object.fromEntries(models.map((m) => [m.id, m]));
     expect(byId["claude-cli-sonnet-1m"].contextLength).toBe(1_000_000);
     expect(byId["claude-cli-opus-1m"].contextLength).toBe(1_000_000);
-    expect(byId["claude-cli-opus"].contextLength).toBe(200_000);
+    expect(byId["claude-cli-opus"].contextLength).toBe(1_000_000);
+    expect(byId["claude-cli-sonnet"].contextLength).toBe(1_000_000);
+    expect(byId["claude-cli-haiku"].contextLength).toBe(200_000);
   });
 
   it("registers exactly the ids it maps — no row without a mapping", async () => {

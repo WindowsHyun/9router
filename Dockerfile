@@ -75,7 +75,7 @@ ENV DATA_DIR=/app/data
 # Claude Code ships inside the image so the claude-cli provider works out of the
 # box — installing 9Router is meant to be the whole install. Pinned, because an
 # unpinned CLI would change what routed requests run on every image rebuild.
-ARG CLAUDE_CODE_VERSION=2.1.278
+ARG CLAUDE_CODE_VERSION=2.1.281
 ARG NPM_REGISTRY
 RUN npm install -g --registry="${NPM_REGISTRY:-https://registry.npmjs.org}" \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \

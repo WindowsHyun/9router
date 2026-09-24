@@ -59,14 +59,18 @@ export default {
   // rejected with "isn't described by this version's model catalog", so this
   // is checked, not guessed.
   models: [
+    // Context lengths read from the CLI's own `modelUsage` report on 2.1.280,
+    // not inferred from the alias: every current Claude model already answers
+    // with a 1M window, so only haiku is smaller, and the [1m] suffix no longer
+    // changes the size it reports.
     { id: "claude-cli-default", name: "Claude Code (your configured default)", contextLength: 200000 },
-    { id: "claude-cli-opus", name: "Opus (alias → claude-opus-5)", contextLength: 200000 },
+    { id: "claude-cli-opus", name: "Opus (alias → claude-opus-5)", contextLength: 1000000 },
     { id: "claude-cli-opus-1m", name: "Opus, 1M context (opus[1m])", contextLength: 1000000 },
     // Opus plans, Sonnet executes — Claude Code's own mode, not a model id.
-    { id: "claude-cli-opusplan", name: "Opus plan + Sonnet execute (opusplan)", contextLength: 200000 },
-    { id: "claude-cli-sonnet", name: "Sonnet (alias → claude-sonnet-5)", contextLength: 200000 },
+    { id: "claude-cli-opusplan", name: "Opus plan + Sonnet execute (opusplan)", contextLength: 1000000 },
+    { id: "claude-cli-sonnet", name: "Sonnet (alias → claude-sonnet-5)", contextLength: 1000000 },
     { id: "claude-cli-sonnet-1m", name: "Sonnet, 1M context (sonnet[1m])", contextLength: 1000000 },
-    { id: "claude-cli-fable", name: "Fable (alias → claude-fable-5-1)", contextLength: 200000 },
+    { id: "claude-cli-fable", name: "Fable (alias → claude-fable-5-1)", contextLength: 1000000 },
     { id: "claude-cli-haiku", name: "Haiku (alias → claude-haiku-4-5)", contextLength: 200000 },
   ],
   passthroughModels: true,

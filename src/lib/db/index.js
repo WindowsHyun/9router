@@ -71,6 +71,7 @@ export {
 // Request details
 export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  isObservabilityRecording, observabilityEnvSource,
 } from "./repos/requestDetailsRepo.js";
 
 // Export/import full DB

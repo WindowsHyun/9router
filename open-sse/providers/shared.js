@@ -22,7 +22,11 @@ export function mapStainlessArch() {
 
 // Anthropic API version (single source — reused across claude-format providers/executors)
 export const ANTHROPIC_API_VERSION = "2023-06-01";
-export const CLAUDE_CLI_VERSION = "2.1.280";
+// What a genuine client calls itself. Captured from the installed binary on
+// 2026-09-24: `user-agent: claude-cli/2.1.281 (external, sdk-cli)`. Kept level
+// with the version the image installs, since a header meant to look like the
+// current client is the one thing here that must not be stale.
+export const CLAUDE_CLI_VERSION = "2.1.281";
 
 // Shared Claude-compatible API headers (reused across claude-format providers)
 export const CLAUDE_API_HEADERS = {

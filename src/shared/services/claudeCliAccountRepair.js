@@ -51,6 +51,36 @@ export async function accountSignedIn(psd = {}) {
 }
 
 /**
+ * The OAuth access token this account can query its subscription quota with.
+ *
+ * Two sources, because there are two kinds of account. A token account carries
+ * the credential itself (`claude setup-token`, long-lived). A config-directory
+ * account has whatever Claude Code last wrote to its credentials file, which
+ * the CLI refreshes as it runs.
+ *
+ * An expired file token is reported as no token rather than handed on: the
+ * usage endpoint would reject it, and the caller would spend two further
+ * legacy requests finding that out.
+ *
+ * The return value is a live credential for the user's Claude subscription —
+ * it must never reach a log line or a response body.
+ */
+export async function claudeCliAccessToken(psd = {}) {
+  if (psd?.oauthToken) return psd.oauthToken;
+  if (!psd?.configDir) return null;
+  try {
+    const raw = await fs.readFile(path.join(psd.configDir, CREDENTIALS_FILE), "utf8");
+    const oauth = JSON.parse(raw)?.claudeAiOauth;
+    if (!oauth?.accessToken) return null;
+    const expiresAt = Number(oauth.expiresAt);
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) return null;
+    return oauth.accessToken;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Re-enable accounts carrying the fingerprint the old Check left behind.
  *
  * Deliberately narrow: an account switched off on purpose keeps a different

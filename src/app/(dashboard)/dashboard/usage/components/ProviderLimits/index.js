@@ -16,6 +16,7 @@ import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
 import {
   parseQuotaData,
   calculatePercentage,
+  getRemainingPercentage,
   filterQuotasByVisibility,
   getHiddenQuotaRows,
   getQuotaVisibilityKey,
@@ -482,8 +483,15 @@ export default function ProviderLimits() {
     // Throttle Claude: poll its quota every Nth auto-tick (manual force bypasses)
     const tick = (tickCountRef.current += 1);
     const claudeEvery = Math.round(CLAUDE_REFRESH_INTERVAL_MS / REFRESH_INTERVAL_MS);
+    // claude-cli polls the same Anthropic usage endpoint as claude, against the
+    // same per-token 429 cooldown — so it has to share the throttle. Polling it
+    // every tick would rate-limit both providers, not just itself.
+    const throttled = (provider) => provider === "claude" || provider === "claude-cli";
+    // The first tick always fetches: throttling it leaves the card empty on
+    // open until the Nth minute, which reads as "no quota" rather than "not
+    // polled yet".
     const shouldFetch = (conn) =>
-      force || conn.provider !== "claude" || tick % claudeEvery === 0;
+      force || !throttled(conn.provider) || tick === 1 || tick % claudeEvery === 0;
 
     try {
       const visibleConnections = await fetchConnections(page);
@@ -741,13 +749,23 @@ export default function ProviderLimits() {
     [connections, quotaData, expiringFirst, providerFilter, quotaSortMode],
   );
 
-  // Connection is depleted when any quota entry hit the threshold
+  // Connection is depleted when any quota entry hit the threshold.
+  //
+  // Read through the same helper the table draws with, rather than recomputing
+  // from used/total. The two disagree wherever a provider does not report
+  // "used out of total": vercel-ai-gateway puts the *remaining* balance in
+  // `used`, so $4.80 left of $5 reads as 96% in the table and 4% here — and
+  // "Turn off Empty" then switched off an account with nearly all its credit
+  // intact. A row that reports no limit at all has nothing to be depleted
+  // against.
   const isConnectionDepleted = (conn) => {
     const quotas = quotaData[conn.id]?.quotas;
     if (!quotas?.length) return false;
     return quotas.some((q) => {
-      if (!q.total || q.total <= 0) return false;
-      return calculatePercentage(q.used, q.total) <= DEPLETED_QUOTA_THRESHOLD;
+      if (q.unlimited === true) return false;
+      if (q.remaining === undefined && q.remainingPercentage === undefined
+        && !(q.total > 0)) return false;
+      return getRemainingPercentage(q) <= DEPLETED_QUOTA_THRESHOLD;
     });
   };
 

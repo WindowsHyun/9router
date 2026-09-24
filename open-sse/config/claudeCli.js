@@ -2,6 +2,30 @@
 export const CLAUDE_CLI_BASE_URL = "claude-cli://stdio";
 
 // One turn per request: this is an inference endpoint, not an agent loop.
+// The caller's tools reach Claude Code through an MCP server, because MCP is
+// the only surface that takes arbitrary tool schemas — `--tools` selects from
+// the CLI's own built-in set. The CLI namespaces every MCP tool it exposes as
+// `mcp__<server>__<tool>`, so this name is also what has to be stripped back
+// off before a proposed call is handed to the client that asked for it.
+export const CLAUDE_CLI_MCP_SERVER = "ninerouter";
+export const CLAUDE_CLI_MCP_TOOL_PREFIX = `mcp__${CLAUDE_CLI_MCP_SERVER}__`;
+
+// Settings the child must not decide for itself.
+//
+// Every one of these is a way the CLI would otherwise act on its own behalf in
+// the middle of somebody's API request: retrying upstream (and billing the
+// subscription twice for one request), compacting the conversation the caller
+// sent, searching for tools, phoning home, or replaying a token-budget reminder
+// that invalidates the cached prefix. The same set the Hermes plugin pins.
+export const CLAUDE_CLI_CHILD_ENV = {
+  CLAUDE_CODE_MAX_RETRIES: "0",
+  DISABLE_AUTO_COMPACT: "1",
+  DISABLE_COMPACT: "1",
+  ENABLE_TOOL_SEARCH: "false",
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  CLAUDE_CODE_TOTAL_TOKENS_REMINDER: "off",
+};
+
 export const CLAUDE_CLI_DEFAULT_MAX_TURNS = 1;
 export const CLAUDE_CLI_MAX_TURNS_LIMIT = 10;
 
@@ -34,8 +58,89 @@ export const CLAUDE_CLI_ENV_ALLOWLIST = [
   "CLAUDE_CODE_OAUTH_TOKEN",
 ];
 
+// Host settings that would send the child somewhere other than the operator's
+// Claude subscription. None of them is on the allowlist, so none reaches the
+// child and the routing is already correct — but an operator who set one meant
+// it, and silently ignoring it is how someone spends an afternoon wondering why
+// their Bedrock key is not being used. Named in the log instead.
+//
+// The Hermes plugin refuses the request outright for these. A gateway cannot:
+// its environment is shared by every provider, and one stray variable would
+// take down a route that works.
+export const CLAUDE_CLI_CONFLICTING_ENV = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+];
+
+/** Those of them this host actually has set to something meaningful. */
+export function conflictingHostAuth(env = process.env) {
+  return CLAUDE_CLI_CONFLICTING_ENV.filter((key) => {
+    const value = env[key];
+    if (value === undefined || value === "") return false;
+    // The three switches are only a conflict when switched on.
+    if (key.startsWith("CLAUDE_CODE_USE_")) {
+      return !["0", "false", "no", "off"].includes(String(value).toLowerCase());
+    }
+    return true;
+  });
+}
+
+// The cache relay, off unless asked for.
+//
+// It is the only part of this provider that is not simply `claude -p`: it puts
+// a loopback HTTP hop between the child and the API so the prompt-cache
+// breakpoint can be moved, which is worth a great deal on a long conversation
+// — measured, the difference between reading 20k of cache back and reprocessing
+// all of it every turn.
+//
+// It is off because it does not yet hold up. Against a real subscription the
+// live suite scores 28/28 with it off and 4/28 with it on: the child's request
+// reaches the relay and no response comes back, and the CLI drops the
+// connection thirty seconds later. That failure then locks the account for
+// thirty seconds, so one bad request takes every request behind it with it.
+// The cause is not yet found — it does not reproduce outside the Next server,
+// where the same relay carries the same request to the same API and answers 200.
+//
+// Until it does hold up, the default has to be the path that works. Set
+// CLI_CLAUDE_CACHE_RELAY=1 to try it.
+export function cacheRelayEnabled(env = process.env) {
+  return String(env.CLI_CLAUDE_CACHE_RELAY ?? "0").toLowerCase() === "1";
+}
+
+// How a tool turn is written when the conversation cannot be replayed as turns.
+// Prose, not a bracketed marker: a model that reads `[Tool call ...]` in its own
+// history imitates it, writing the marker as text instead of proposing a call —
+// which leaves the client waiting for one that never comes.
+export const CLAUDE_CLI_TOOL_CALL_PREFIX = "(the assistant used the ";
+export const CLAUDE_CLI_TOOL_RESULT_PREFIX = "(that tool returned: ";
+
+// What a replayed turn is flagged for carrying: 9Router's own flattened forms
+// above, plus the bracketed shape the other CLI providers still emit. A client
+// can send either back as history, and both are shapes the model imitates.
+// Kept beside the forms themselves so the detector cannot drift from them —
+// it did once, and then matched nothing any current code produces.
+export const CLAUDE_CLI_TRANSCRIPT_MARKERS = [
+  CLAUDE_CLI_TOOL_CALL_PREFIX,
+  CLAUDE_CLI_TOOL_RESULT_PREFIX,
+  "[Tool call ",
+  "[Tool result ",
+];
+
 // The CLI streams within seconds; a longer silence means a hung/blocked child.
 export const CLAUDE_CLI_IDLE_TIMEOUT_MS = 180000;
+
+// How long a child gets to exit by itself once it has delivered its answer.
+// Its stdin closed before it started, so it should go at once; what does not
+// always go is what it started — the MCP server, and on Windows the cmd.exe
+// shim — and those hold the pipes that `close` waits for. `close` is what
+// frees the gate slot, so a child that answers and then lingers would hold a
+// slot with nothing left watching it.
+export const CLAUDE_CLI_EXIT_GRACE_MS = 5000;
 
 // Claude Code refuses to nest inside another Claude Code session, and 9Router
 // may itself have been launched from one. A routed spawn is safe by omission
@@ -59,16 +164,6 @@ export function resolveClaudeCliMaxConcurrency(env = process.env) {
   return CLAUDE_CLI_DEFAULT_MAX_CONCURRENCY;
 }
 
-// Windows caps a whole command line at 32,767 chars; measured on claude 2.1.278,
-// a 30k-char --system-prompt works and 40k fails with ENAMETOOLONG. There is no
-// --system-prompt-file in this CLI, so an oversized system prompt is moved into
-// the stdin turn instead. POSIX ARG_MAX is far larger but not unlimited.
-export const CLAUDE_CLI_ARGV_BUDGET = { win32: 24000, default: 120000 };
-
-export function claudeCliArgvBudget(platform = process.platform) {
-  return CLAUDE_CLI_ARGV_BUDGET[platform] ?? CLAUDE_CLI_ARGV_BUDGET.default;
-}
-
 // `--model` is request-controlled (passthroughModels). Nothing is spawned through
 // a shell any more, but the value still has to be a plausible model id, and the
 // leading character may not be "-": commander would treat `--model --foo` as a
@@ -83,10 +178,6 @@ export const CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant res
 
 // Used when the caller's system prompt had to move into the stdin turn: it still
 // replaces Claude Code's default agent prompt, which is the point of passing one.
-export const CLAUDE_CLI_INLINE_SYSTEM_PROMPT =
-  "You are a helpful assistant serving an API request. The user message may open with a [System] block: "
-  + "treat its contents as your system instructions and follow them exactly, and treat the [User], [Assistant] "
-  + "and [Tool] blocks after it as the conversation so far. Never mention these markers in your reply.";
 
 // Routed model id → value passed to `claude --model`. Aliases stay as-is so the
 // CLI keeps resolving "latest" itself; pinned ids pass through unchanged.

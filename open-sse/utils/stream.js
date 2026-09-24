@@ -72,6 +72,19 @@ export function createSSEStream(options = {}) {
   let totalContentLength = 0;
   let accumulatedContent = "";
   let accumulatedThinking = "";
+  // Tool calls, for the record only — they are forwarded to the client either
+  // way. A turn whose whole answer is a tool call accumulated no text, so the
+  // dashboard recorded it as "[Empty streaming response]": the one shape an
+  // agentic client produces constantly, filed as if nothing had come back.
+  // Keyed by the index the deltas carry, because arguments arrive in fragments.
+  const accumulatedToolCalls = new Map();
+  const rememberToolCall = (index, name, argsFragment) => {
+    const key = String(index ?? accumulatedToolCalls.size);
+    const call = accumulatedToolCalls.get(key) || { name: "", args: "" };
+    if (name) call.name = name;
+    if (argsFragment) call.args += argsFragment;
+    accumulatedToolCalls.set(key, call);
+  };
   let ttftAt = null;
   let sseLineCount = 0;
   let sseEmittedCount = 0;
@@ -105,8 +118,14 @@ export function createSSEStream(options = {}) {
     }
 
     if (onStreamComplete) {
+      // Only when there is no text to show: a turn that said something AND
+      // called a tool is described by what it said.
+      const toolSummary = accumulatedContent ? "" : [...accumulatedToolCalls.values()]
+        .filter((call) => call.name)
+        .map((call) => `[tool_call] ${call.name}(${call.args || ""})`)
+        .join("\n");
       onStreamComplete({
-        content: accumulatedContent,
+        content: accumulatedContent || toolSummary,
         thinking: accumulatedThinking
       }, finalUsage, ttftAt);
     }
@@ -198,6 +217,11 @@ export function createSSEStream(options = {}) {
               if (reasoning && typeof reasoning === "string") {
                 totalContentLength += reasoning.length;
                 accumulatedThinking += reasoning;
+              }
+              if (Array.isArray(delta?.tool_calls)) {
+                for (const call of delta.tool_calls) {
+                  rememberToolCall(call?.index, call?.function?.name, call?.function?.arguments);
+                }
               }
 
               const extracted = extractUsage(parsed);
@@ -294,6 +318,14 @@ export function createSSEStream(options = {}) {
         if (parsed.delta?.thinking) {
           totalContentLength += parsed.delta.thinking.length;
           accumulatedThinking += parsed.delta.thinking;
+        }
+        // Claude format - tool call. The name arrives when the block opens and
+        // the arguments as partial_json after it, both keyed by block index.
+        if (parsed.type === "content_block_start" && parsed.content_block?.type === "tool_use") {
+          rememberToolCall(parsed.index, parsed.content_block.name, "");
+        }
+        if (parsed.type === "content_block_delta" && parsed.delta?.type === "input_json_delta") {
+          rememberToolCall(parsed.index, "", parsed.delta.partial_json);
         }
         
         // OpenAI format - content

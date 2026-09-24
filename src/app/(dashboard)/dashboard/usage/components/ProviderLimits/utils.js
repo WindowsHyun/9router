@@ -576,17 +576,23 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      // Claude Code CLI bills against the same subscription and reads the same
+      // usage endpoint, so its payload IS claude's payload — same window keys,
+      // same utilization/resets_at. Parsing it any other way is what left it
+      // without a percentage or a reset time.
+      case "claude-cli":
       case "claude":
-        if (data.message) {
-          // Handle error message case
-          normalizedQuotas.push({
-            name: "error",
-            used: 0,
-            total: 0,
-            resetAt: null,
-            message: data.message,
-          });
-        } else if (data.quotas) {
+        // Figures first. A fallback payload carries quotas *and* a message
+        // saying where the numbers came from; reading the message first threw
+        // the figures away and rendered the note in their place.
+        //
+        // And a payload with nothing to show contributes no row at all.
+        // Pushing a placeholder named "error" made the table non-empty, which
+        // is the very condition the card checks before showing the message
+        // instead — so the message never appeared, and in its place sat a red
+        // row reading 0 / infinity with a Hide button. The message is carried
+        // on the payload itself and rendered from there.
+        if (data.quotas && Object.keys(data.quotas).length > 0) {
           Object.entries(data.quotas).forEach(([name, quota]) => {
             normalizedQuotas.push({
               name,
@@ -595,6 +601,14 @@ export function parseQuotaData(provider, data) {
               remaining: quota.remaining !== undefined ? quota.remaining : Math.max(0, (quota.total || 100) - (quota.used || 0)),
               remainingPercentage: quota.remainingPercentage !== undefined ? quota.remainingPercentage : calculatePercentage(quota.used, quota.total),
               resetAt: quota.resetAt || null,
+              // Carried through, not dropped. claude-cli falls back to figures
+              // counted by this server when no credential can be resolved, and
+              // those report no limit at all — without these the table would
+              // draw a bar and grade a percentage against a limit nobody
+              // reported. The claude provider never sends them, so this is
+              // inert there.
+              ...(quota.unlimited === true ? { unlimited: true } : {}),
+              ...(quota.detail ? { detail: quota.detail } : {}),
             });
           });
         }
@@ -760,7 +774,7 @@ export function parseQuotaData(provider, data) {
     return [];
   }
 
-  if (provider?.toLowerCase() === "claude") {
+  if (provider?.toLowerCase() === "claude" || provider?.toLowerCase() === "claude-cli") {
     const CLAUDE_QUOTA_ORDER = {
       "session (5h)": 0,
       "weekly (7d)": 1,
