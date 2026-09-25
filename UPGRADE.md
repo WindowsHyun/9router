@@ -13,6 +13,7 @@ What the fork adds — in full in [FORK-CHANGELOG.md](FORK-CHANGELOG.md):
 | Agent skills | Install a third-party `SKILL.md` by URL and toggle it per request; injected into the routed prompt |
 | Docker packaging | The router image bundles Claude Code, so one install covers it |
 | Bridge sign-in console | The router serves the bridge's noVNC window on its own origin behind the dashboard session, so signing in needs no `kubectl port-forward` |
+| API Key Usage page | Per-key time series + CSV export at Dashboard → API Key Usage, plus a fix so a raw API key never reaches the browser as a JSON property name from `/api/usage/stats` |
 
 **The short version**
 
@@ -27,16 +28,18 @@ node scripts/fork/upgrade-fork.mjs              # take the newest upstream tag
 
 This matters more than any script: **most of the fork is new files, and new files never conflict.**
 
-- **42 added files** — providers, executors, configs, components, API routes, agent-skill
+- **52 added files** — providers, executors, configs, components, API routes, agent-skill
   storage and injection, local-provider accounts, the bridge's Docker image and its sign-in
-  console proxy, tests, this tooling.
+  console proxy, the API Key Usage page and its data layer, tests, this tooling.
   Upstream does not know they exist, so an upgrade cannot break them. They only need to still be
   there afterwards.
 - **32 edited upstream files** — almost all of them a handful of lines that *register* the new
   files (an import, a map entry, an array item). These are the only places a conflict can happen.
   The exceptions worth knowing about are `custom-server.js` (it hosts the sign-in console's
-  WebSocket, which a Next route handler cannot serve) and `src/dashboardGuard.js` (local-only
-  routes have to stay reachable inside a container).
+  WebSocket, which a Next route handler cannot serve), `src/dashboardGuard.js` (local-only
+  routes have to stay reachable inside a container), and `src/lib/db/repos/usageRepo.js` (the
+  API Key Usage feature's re-keying is a real bug fix layered into upstream's own aggregation
+  logic, not just a registration point — see its row below).
 - **2 generated snapshots** — `tests/__baseline__/*.json`. Upstream adds providers too, so
   these conflict on most releases and are **regenerated, never merged**.
 
@@ -152,6 +155,10 @@ fork almost never replaces upstream code — the one exception is called out.
 | `src/shared/components/index.js` | 3 re-exports | Keep both. |
 | `…/providers/[id]/ConnectionRow.js` | `autoPingSchedule` prop, its Schedule button, tooltip, propTypes | Keep both. |
 | `…/providers/[id]/page.js` | Imports, `cronScheduleTarget` state, `cron` in the auto-ping state and settings load, `handleAutoPingSchedule`, the `autoPingSchedule` prop, the modal, and the two status cards in the `isFreeNoAuth` branch | Most touch points of any file; work through them one at a time. |
+| `src/lib/db/repos/usageRepo.js` | Imports `apiKeyBucketId`/`deletedKeyLabel` from `apiKeyUsageRepo.js` and re-keys `stats.byApiKey` away from the raw API key on all three code paths that build it (daily rollup, `usageHistory` overlay, 24h/today), plus the deleted-key `keyName` label | **The one entry on this table that is a real bug fix, not a registration point** — before it, every raw API key ever used reached the browser as a JSON property name on every `/api/usage/stats` poll. Keep all three re-keyed call sites plus upstream's changes nearby. Do **not** re-key the stored composite in `usageDaily.data.byApiKey` (still `${rawApiKey}|${model}|${provider}`, deliberately) — that would orphan every day already accumulated; only the value this function *returns* is re-keyed. Do **not** resolve the `maskApiKey` duplication (below) by importing it from here into `apiKeyUsageRepo.js` — this file already imports from there, so the reverse import closes a cycle. |
+| `src/shared/components/UsageStats.js` | `sortData`, `groupDataByKey`, `API_KEY_COLUMNS`, and the API-key table's two render functions moved from private/inline to exported module scope | The API Key Usage page renders the exact same table through these exports rather than a copy. Keep them; the `case "apiKey":` branch in this file still calls the render functions by reference. |
+| `src/shared/components/Sidebar.js` | One nav entry, `/dashboard/api-key-usage` | Keep both. |
+| `tests/unit/security-audit.test.js` | AUDIT-002's assertion checks for `apiKeyBucketId(r.apiKey, apiKeyMap)` in `usageRepo.js`'s source, in step with the re-keying above | Keep the fork's assertion text if upstream also edits this file's AUDIT-002 test — it is the source-guard companion to the behavioral `tests/unit/usage-stats-no-raw-keys.test.js`. |
 
 `CHANGELOG.md` is deliberately **not** in this list. The fork's entries live in
 `FORK-CHANGELOG.md` precisely so upstream's changelog never conflicts.
@@ -264,8 +271,13 @@ upstream:
 - **`sseToJsonHandler.js`** — a non-streaming Claude-format client of any `forceStream` provider
   (opencode, zed, codebuddy, …) receives an OpenAI `chat.completion` body it cannot parse. The fix
   reuses the existing shared translator. Covered by `tests/unit/forced-sse-client-format.test.js`.
+- **`usageRepo.js`'s raw-API-key re-keying** — the bug (`stats.byApiKey` keyed by the raw API key,
+  which then rides along in every `/api/usage/stats` response) is entirely upstream's; nothing
+  fork-specific caused it. `apiKeyBucketId`/`deletedKeyLabel` (`apiKeyUsageRepo.js`) are the fix and
+  would need to move too, since `usageRepo.js` imports them — the API Key Usage page's own use of
+  `apiKeyBucketId` for its chart series would stay fork-side either way.
 
-If upstream takes it, drop it from the fork and from `PATCHED_FILES` in the manifest — one less
+If upstream takes either, drop it from the fork and from `PATCHED_FILES` in the manifest — one less
 file that can ever conflict.
 
 ---
