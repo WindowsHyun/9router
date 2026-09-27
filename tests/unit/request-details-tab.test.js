@@ -22,14 +22,20 @@ beforeAll(async () => {
   vi.resetModules();
   db = await import("@/lib/db/index.js");
   await db.initDb();
-  await db.updateSettings({ enableObservability2: true, observabilityBatchSize: 1 });
+  // enableObservability, not enableObservability2 — the typo left recording off,
+  // so every saveRequestDetail in this file was a no-op and the two cases that
+  // read a saved row back got null.
+  await db.updateSettings({ enableObservability: true, observabilityBatchSize: 1 });
 
   const { getAdapter } = await import("@/lib/db/driver.js");
   adapter = await getAdapter();
 });
 
 afterAll(() => {
-  if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  // Windows keeps the SQLite file open until the driver is collected, and an
+  // EPERM here failed the whole file even with every test green. The directory
+  // is under %TEMP% either way.
+  try { if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* held open */ }
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
 });
