@@ -6,7 +6,30 @@ Kept out of the upstream `CHANGELOG.md` on purpose: upstream rewrites the top of
 that file on every release, so an entry there would conflict on 100% of upgrades.
 See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
-## Unreleased (on top of v0.5.85)
+## Unreleased (on top of v0.5.91)
+
+### Fixes
+
+#### Scheduled keepalives no longer silently skip a slot
+
+A cron keepalive fired only if a scheduler tick landed on the slot's exact
+minute, and nothing ever caught up afterwards. So a slot was lost whenever that
+one tick missed it: a tick still busy with the previous ping, an earlier
+account's `claude -p` running the next account past the minute (reproduced in
+`quota-autoping-cron.test.js`: two accounts on one slot, a 70 s ping, the second
+account never pinged), or a pod restart across it. A keepalive meant to open a
+5h window on a fixed clock is worthless when it skips.
+
+- A slot now fires late rather than never: the scheduler takes the latest slot
+  in the last `cronCatchUpMinutes` (15) that has not fired yet. The fire key is
+  the slot's own minute, so a late slot still fires once.
+- A failed ping is recorded (`lastCronFailedAt`) but never as the fire key, so
+  it is retried after the 5-minute cooldown, inside the same window.
+- The log line says how late a slot fired (`… (0 7 * * *, 3m late)`).
+- The Claude Code accounts card shows the last keepalive, sent or failed, in the
+  schedule's timezone, and the schedule badge names its timezone. An unset one
+  reads "server time", which in the container is UTC — the easiest way for a
+  schedule to run at the wrong hour.
 
 ### Features
 

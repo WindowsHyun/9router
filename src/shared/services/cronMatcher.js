@@ -228,3 +228,33 @@ export function firstMatchingExpression(expressions, date = new Date(), timeZone
   }
   return null;
 }
+
+const MINUTE_MS = 60000;
+
+/**
+ * The most recent scheduled slot at or before `date`, looking back at most
+ * `windowMinutes` whole minutes — or null when none fell inside that window.
+ *
+ * `firstMatchingExpression` only answers "is this exact minute a slot?", so a
+ * slot is lost whenever the one tick that should see it does not: a tick still
+ * busy, an earlier connection's ping running past the minute, a restart across
+ * it. This lets the caller fire a slot late instead of never. `at` is the
+ * slot's own minute, so a fire key built from it is the same however late the
+ * slot is fired — which is what stops it firing twice.
+ *
+ * @param {string[]} expressions
+ * @param {Date} date
+ * @param {string|null} timeZone
+ * @param {number} windowMinutes  0 = the current minute only
+ * @returns {{expression: string, at: Date}|null}
+ */
+export function latestDueFire(expressions, date = new Date(), timeZone = null, windowMinutes = 0) {
+  const currentMinute = Math.floor(date.getTime() / MINUTE_MS) * MINUTE_MS;
+  const lookBack = Math.max(0, Math.floor(windowMinutes));
+  for (let back = 0; back <= lookBack; back += 1) {
+    const at = new Date(currentMinute - back * MINUTE_MS);
+    const expression = firstMatchingExpression(expressions, at, timeZone);
+    if (expression) return { expression, at };
+  }
+  return null;
+}

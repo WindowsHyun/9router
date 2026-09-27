@@ -32,6 +32,9 @@ export const ADDED_FILES = [
   // cron auto-ping
   "src/shared/services/cronMatcher.js",
   "src/shared/components/AutoPingScheduleModal.js",
+  // what the accounts card says about the last scheduled keepalive
+  "src/shared/utils/keepaliveStatus.js",
+  "tests/unit/keepalive-status.test.js",
   // shared
   "open-sse/utils/concurrencyGate.js",
   // agent skills — third-party SKILL.md injected into routed requests
@@ -116,12 +119,12 @@ export const PATCHED_FILES = [
   },
   {
     path: "src/shared/services/quotaAutoPing.js",
-    markers: ["cronMatcher", "runCronPing", "readCronEntry", "sendClaudeCliPing", "providerHandlers"],
+    markers: ["cronMatcher", "latestDueFire", "runCronPing", "readCronEntry", "sendClaudeCliPing", "providerHandlers"],
     hint: "Largest fork edit. Cron support is additive: the import, sendPingViaCli on the claude handler, sendClaudeCliPing, the cron block, the tick's cron branch, and the deps.providerHandlers injection. Keep all of them plus upstream's changes to the reset-based path.",
   },
   {
     path: "src/shared/constants/config.js",
-    markers: ["cronPingText", "cronMaxExpressions", "cliPingModel", "cliPingTimeoutMs"],
+    markers: ["cronPingText", "cronMaxExpressions", "cronCatchUpMinutes", "cliPingModel", "cliPingTimeoutMs"],
     hint: "Additive keys inside QUOTA_AUTOPING_CONFIG. Keep them and any new upstream keys.",
   },
   {
@@ -293,6 +296,7 @@ export const FORK_TESTS = [
   "unit/claude-cli-session-executor.test.js",
   "unit/concurrency-gate.test.js",
   "unit/quota-autoping-cron.test.js",
+  "unit/keepalive-status.test.js",
   "unit/forced-sse-client-format.test.js",
   "unit/api-key-usage-bucket-id.test.js",
   "unit/api-key-usage-series.test.js",

@@ -28,7 +28,7 @@ node scripts/fork/upgrade-fork.mjs              # take the newest upstream tag
 
 This matters more than any script: **most of the fork is new files, and new files never conflict.**
 
-- **52 added files** — providers, executors, configs, components, API routes, agent-skill
+- **54 added files** — providers, executors, configs, components, API routes, agent-skill
   storage and injection, local-provider accounts, the bridge's Docker image and its sign-in
   console proxy, the API Key Usage page and its data layer, tests, this tooling.
   Upstream does not know they exist, so an upgrade cannot break them. They only need to still be
@@ -147,7 +147,7 @@ fork almost never replaces upstream code — the one exception is called out.
 | `open-sse/executors/index.js` | 1 import + 2 map entries (`claude-cli`, `ccli`) | Keep both next to upstream's. |
 | `open-sse/handlers/chatCore/sseToJsonHandler.js` | **Replaces** the final `const finalBody = …` ternary with an if/else that also converts for non-OpenAI clients | The one real replacement. Keep the fork's block; upstream's ternary is what it supersedes. This is a genuine upstream bug fix — see *Sending things upstream* below. |
 | `src/shared/services/quotaAutoPing.js` | The whole cron layer: `cronMatcher` import, `sendClaudeCliPing`, `sendPingViaCli` on the claude handler, `readCronEntry`/`runCronPing`, the cron branch in the tick, `deps.providerHandlers` | Largest edit, but purely additive. Keep upstream's changes to the reset-based path and re-add the cron pieces around them. |
-| `src/shared/constants/config.js` | `cronPingText`, `cronMaxExpressions`, `cronFailureCooldownMs`, `cliPingTimeoutMs`, `cliPingModel` inside `QUOTA_AUTOPING_CONFIG` | Additive keys. Keep both sides. |
+| `src/shared/constants/config.js` | `cronPingText`, `cronMaxExpressions`, `cronFailureCooldownMs`, `cronCatchUpMinutes`, `cliPingTimeoutMs`, `cliPingModel` inside `QUOTA_AUTOPING_CONFIG` | Additive keys. Keep both sides. |
 | `src/shared/services/initializeApp.js` | `hasQuotaAutoPingEnabled` also returns true for cron-only setups | Without it a cron schedule does not survive a restart. |
 | `src/dashboardGuard.js` | 2 entries in `LOCAL_ONLY_PATHS` | **Security-relevant.** One route spawns a process, the other fetches a URL and can open a window on the host. Dropping them exposes both when `requireLogin` is false. |
 | `src/app/api/cli-tools/all-statuses/route.js` | 2 imports + 2 `STATUS_GETTERS` entries | Keep both. |
