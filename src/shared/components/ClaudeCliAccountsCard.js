@@ -127,9 +127,15 @@ export default function ClaudeCliAccountsCard() {
       // `verified` means Claude returned an identity, which only happens when
       // the credential was actually accepted. `signedIn` alone just means one
       // is present — worth distinguishing, since a stale token looks signed in.
+      // A token account has no profile to name: `claude auth status` reports
+      // no email for one, however valid it is, so it is verified by being used
+      // rather than by being identified. Saying "expired" there was wrong for
+      // every container account, which is the only kind a container can have.
       const ok = data.verified
-        ? `Verified as ${data.identity.email}${data.identity.orgName ? ` (${data.identity.orgName})` : ""}.`
-        : "A credential is present, but Claude did not return an account for it — it may be expired.";
+        ? (data.identity?.email
+          ? `Verified as ${data.identity.email}${data.identity.orgName ? ` (${data.identity.orgName})` : ""}.`
+          : "Verified: the credential was accepted. A token account carries no profile, so there is no email to show.")
+        : "The credential was not accepted — it has most likely expired.";
       setMessage(data.signedIn ? ok : finishHint);
       await reload();
     } catch (e) {

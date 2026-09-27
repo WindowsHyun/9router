@@ -49,8 +49,14 @@ function hostConfigDir() {
  *
  * Spawns the binary, so this belongs on Check and not on every page load.
  */
-async function accountIdentity(bin, psd = {}, timeoutMs = 30_000) {
-  if (!bin) return null;
+/**
+ * The environment a probe runs the binary under.
+ *
+ * The account's own credential and nothing else of the server's: a host that
+ * has CLAUDE_CODE_OAUTH_TOKEN of its own would otherwise answer for an account
+ * attached by directory, and the card would name the wrong subscription.
+ */
+function buildProbeEnv(psd = {}) {
   const env = {};
   for (const key of ["PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot", "TEMP", "TMP"]) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
@@ -58,6 +64,12 @@ async function accountIdentity(bin, psd = {}, timeoutMs = 30_000) {
   if (psd.configDir) env.CLAUDE_CONFIG_DIR = psd.configDir;
   else if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
   if (psd.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = psd.oauthToken;
+  return env;
+}
+
+async function accountIdentity(bin, psd = {}, timeoutMs = 30_000) {
+  if (!bin) return null;
+  const env = buildProbeEnv(psd);
 
   return new Promise((resolve) => {
     let out = "";
@@ -88,6 +100,59 @@ async function accountIdentity(bin, psd = {}, timeoutMs = 30_000) {
         done(null);
       }
     });
+  });
+}
+
+/**
+ * Does this credential actually work?
+ *
+ * `auth status` cannot answer that for a token account. Measured on 2.1.281:
+ * with CLAUDE_CODE_OAUTH_TOKEN set it reports `loggedIn: true`,
+ * `authMethod: "oauth_token"` and NO email, orgName or subscriptionType at
+ * all — the fields are absent rather than empty, and a deliberately invalid
+ * token reports exactly the same thing. It is a local check; it never asks the
+ * server. So "identity came back" is a test a token account can never pass,
+ * however valid it is, and Check told every container operator their working
+ * token looked expired.
+ *
+ * The only way to know is to use it. One word in, one word out — the smallest
+ * request that proves the credential was accepted, on an explicit button press.
+ */
+async function credentialAccepted(bin, psd = {}, timeoutMs = 60_000) {
+  if (!bin) return false;
+  const env = buildProbeEnv(psd);
+  return new Promise((resolve) => {
+    let out = "";
+    let settled = false;
+    const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+    let child;
+    try {
+      child = spawn(bin, [
+        "-p", "--output-format", "stream-json", "--verbose",
+        "--model", "haiku", "--max-turns", "1", "--tools", "",
+        "--setting-sources", "", "--strict-mcp-config",
+        "--permission-mode", "dontAsk", "--disable-slash-commands",
+      ], { env, stdio: ["pipe", "pipe", "pipe"] });
+    } catch {
+      done(false);
+      return;
+    }
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } done(false); }, timeoutMs);
+    child.stdout.on("data", (d) => { out += d; });
+    child.on("error", () => { clearTimeout(timer); done(false); });
+    child.on("close", () => {
+      clearTimeout(timer);
+      const accepted = out.split("\n").some((line) => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("{")) return false;
+        try {
+          const event = JSON.parse(trimmed);
+          return event.type === "result" && event.subtype === "success" && event.is_error !== true;
+        } catch { return false; }
+      });
+      done(accepted);
+    });
+    child.stdin.end("Reply with the single word OK.");
   });
 }
 
@@ -314,8 +379,13 @@ export async function PATCH(request) {
     // accepted the credential, so it upgrades "a credential is present" into
     // "this credential works, and it belongs to <email>" — and gives the card
     // something better to show than "Token account 1".
-    const identity = await accountIdentity(resolveClaudeBin(), target.providerSpecificData);
-    const verified = Boolean(identity?.email);
+    const bin = resolveClaudeBin();
+    const identity = await accountIdentity(bin, target.providerSpecificData);
+    // An email proves it on its own. A token account never has one — see
+    // credentialAccepted — so it is proven by using the credential instead,
+    // and only when there is no cheaper answer already.
+    const verified = Boolean(identity?.email)
+      || (signedIn && await credentialAccepted(bin, target.providerSpecificData));
 
     // testStatus records what the check found. isActive records whether the
     // operator wants the account used, and a check must never clear it: the

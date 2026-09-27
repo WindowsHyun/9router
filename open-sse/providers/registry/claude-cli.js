@@ -26,7 +26,7 @@ export default {
     website: "https://claude.com/claude-code",
     notice: {
       signupUrl: "https://claude.com/claude-code",
-      text: "Runs the local `claude` binary in print mode (`claude -p`) — no API key needed, and no OAuth token replay. Install Claude Code and sign in once (`claude` → /login). Set CLI_CLAUDE_BIN to pin a custom path. Tool calling is not supported on this provider.",
+      text: "Runs the local `claude` binary in print mode (`claude -p`) — no API key needed, and no OAuth token replay. Install Claude Code and sign in once (`claude` → /login). Set CLI_CLAUDE_BIN to pin a custom path. Tool calling is not supported on this provider. Set CLI_CLAUDE_SESSION_CACHE=1 to keep the prompt cache across text turns and to hand the model its history in order: a conversation continues its own Claude Code session (turns that end in a tool call are replayed instead), kept in the account's config directory (projects/) for 15 minutes and then deleted.",
     },
   },
   category: "free",
@@ -59,14 +59,18 @@ export default {
   // rejected with "isn't described by this version's model catalog", so this
   // is checked, not guessed.
   models: [
+    // Context lengths read from the CLI's own `modelUsage` report on 2.1.280,
+    // not inferred from the alias: every current Claude model already answers
+    // with a 1M window, so only haiku is smaller, and the [1m] suffix no longer
+    // changes the size it reports.
     { id: "claude-cli-default", name: "Claude Code (your configured default)", contextLength: 200000 },
-    { id: "claude-cli-opus", name: "Opus (alias → claude-opus-5)", contextLength: 200000 },
+    { id: "claude-cli-opus", name: "Opus (alias → claude-opus-5)", contextLength: 1000000 },
     { id: "claude-cli-opus-1m", name: "Opus, 1M context (opus[1m])", contextLength: 1000000 },
     // Opus plans, Sonnet executes — Claude Code's own mode, not a model id.
-    { id: "claude-cli-opusplan", name: "Opus plan + Sonnet execute (opusplan)", contextLength: 200000 },
-    { id: "claude-cli-sonnet", name: "Sonnet (alias → claude-sonnet-5)", contextLength: 200000 },
+    { id: "claude-cli-opusplan", name: "Opus plan + Sonnet execute (opusplan)", contextLength: 1000000 },
+    { id: "claude-cli-sonnet", name: "Sonnet (alias → claude-sonnet-5)", contextLength: 1000000 },
     { id: "claude-cli-sonnet-1m", name: "Sonnet, 1M context (sonnet[1m])", contextLength: 1000000 },
-    { id: "claude-cli-fable", name: "Fable (alias → claude-fable-5-1)", contextLength: 200000 },
+    { id: "claude-cli-fable", name: "Fable (alias → claude-fable-5-1)", contextLength: 1000000 },
     { id: "claude-cli-haiku", name: "Haiku (alias → claude-haiku-4-5)", contextLength: 200000 },
   ],
   passthroughModels: true,

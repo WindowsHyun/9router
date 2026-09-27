@@ -1,17 +1,19 @@
 /**
- * Usage figures for providers that report no quota of their own.
+ * Usage figures for a connection whose quota cannot be read from upstream.
  *
- * Claude Code CLI bills against a subscription this server cannot query.
- * `claude -p --output-format json` returns the cost and tokens of *that call*
- * (usage.input_tokens, output_tokens, total_cost_usd) but no window remaining
- * and no reset time.
+ * This is a fallback, not the normal path. Claude Code CLI holds an ordinary
+ * Claude subscription and its real 5h/7d windows are readable — see
+ * claudeCliUsage.js, which is what the card shows when a credential can be
+ * resolved. What lands here is an account that has none to ask with: a
+ * config-directory account whose token has expired, or one whose login never
+ * completed.
  *
- * So there is nothing upstream to show a percentage of. What this server does
- * know is what it routed itself, which is already recorded per connection in
- * usageHistory. That is what these figures are — and every quota returned here
- * is flagged `unlimited: true` (so no progress bar is drawn against a limit
- * that was never reported) and named to say where the number came from, rather
- * than being dressed up as a quota.
+ * With no upstream window there is nothing to show a percentage of. What this
+ * server does know is what it routed itself, already recorded per connection
+ * in usageHistory. That is what these figures are — every quota returned here
+ * is flagged `unlimited: true`, so no progress bar is drawn against a limit
+ * that was never reported, and named to say where the number came from rather
+ * than being dressed up as a subscription quota.
  */
 import { getAdapter } from "@/lib/db/driver.js";
 
@@ -60,7 +62,9 @@ export async function getRoutedUsage(connection) {
       remaining: null,
       remainingPercentage: null,
       resetAt: null,
-      detail: failed ? `${rows.length} requests, ${failed} failed` : `${rows.length} requests`,
+      // The table prints "<n> used" itself, so this only adds what that
+      // line cannot say. Nothing to add when every request succeeded.
+      detail: failed ? `${failed} failed` : undefined,
     };
     quotas[`${label} · tokens`] = {
       used: sumTokens(rows),
