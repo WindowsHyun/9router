@@ -173,6 +173,12 @@ async function describe(connection) {
     // Recorded by the last Check, when the server accepted the credential.
     // Absent until then, and absent for a credential that was rejected.
     identity: psd.identity || null,
+    // Written by the auto-ping scheduler, so the card can show whether the
+    // scheduled keepalive actually went out — the log is the only other place.
+    keepalive: {
+      lastSentAt: connection.lastCronPingAt || null,
+      lastFailedAt: connection.lastCronFailedAt || null,
+    },
   };
 }
 

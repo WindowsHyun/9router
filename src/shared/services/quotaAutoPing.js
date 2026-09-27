@@ -10,7 +10,7 @@ import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { refreshAndUpdateCredentials } from "@/app/api/usage/[connectionId]/route.js";
 import { QUOTA_AUTOPING_CONFIG } from "@/shared/constants/config";
-import { cronFireKey, firstMatchingExpression } from "@/shared/services/cronMatcher";
+import { cronFireKey, latestDueFire } from "@/shared/services/cronMatcher";
 
 const C = QUOTA_AUTOPING_CONFIG;
 const CLAUDE_PING_URL = "https://api.anthropic.com/v1/messages?beta=true";
@@ -258,11 +258,15 @@ function hasCronSchedules(providerSettings) {
 }
 
 export async function runCronPing(conn, provider, providerConfig, handler, cron, deps, state = g, now = new Date()) {
-  const expression = firstMatchingExpression(cron.expressions, now, cron.timezone);
-  if (!expression) return;
+  // The latest slot still inside the catch-up window, not just "is this exact
+  // minute a slot": a tick that misses the minute must fire it late, not never.
+  const due = latestDueFire(cron.expressions, now, cron.timezone, C.cronCatchUpMinutes);
+  if (!due) return;
+  const { expression } = due;
 
-  const fireKey = cronFireKey(expression, now, cron.timezone);
-  // Survives a restart inside the same minute - the key is persisted, not cached.
+  // Keyed to the slot's own minute, so a slot fired late is still the same slot.
+  const fireKey = cronFireKey(expression, due.at, cron.timezone);
+  // Survives a restart - the key is persisted, not cached.
   if (conn.lastCronFireKey === fireKey) return;
 
   const key = `cron:${provider}:${conn.id}`;
@@ -311,9 +315,18 @@ export async function runCronPing(conn, provider, providerConfig, handler, cron,
   // branch ran, so reporting "api" for it would simply be false.
   const transport = useCli || providerConfig.localCredentials ? "cli" : "api";
 
+  const lateMinutes = Math.floor((now.getTime() - due.at.getTime()) / 60000);
+  const lateNote = lateMinutes > 0 ? `, ${lateMinutes}m late` : "";
+
   if (!ok) {
     state.failureCache[key] = Date.now();
-    console.warn(`[AutoPing] cron ${provider}:${connection.id}: ping failed (${expression})`);
+    // Persisted so the dashboard can say the slot failed. Never as the fire
+    // key: that would stop the retry the catch-up window exists to allow.
+    await deps.updateProviderConnection(connection.id, {
+      lastCronFailedAt: new Date().toISOString(),
+      lastCronFailedFor: fireKey,
+    });
+    console.warn(`[AutoPing] cron ${provider}:${connection.id}: ping failed (${expression}${lateNote})`);
     return;
   }
 
@@ -324,7 +337,7 @@ export async function runCronPing(conn, provider, providerConfig, handler, cron,
     lastPingAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
-  console.log(`[AutoPing] cron ${provider}:${connection.id}: ping sent via ${transport} (${expression})`);
+  console.log(`[AutoPing] cron ${provider}:${connection.id}: ping sent via ${transport} (${expression}${lateNote})`);
 }
 
 async function pingConnection(conn, provider, providerConfig, handler, deps, state = g) {

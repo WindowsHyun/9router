@@ -6,7 +6,30 @@ Kept out of the upstream `CHANGELOG.md` on purpose: upstream rewrites the top of
 that file on every release, so an entry there would conflict on 100% of upgrades.
 See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
-## Unreleased (on top of v0.5.85)
+## Unreleased (on top of v0.5.91)
+
+### Fixes
+
+#### Scheduled keepalives no longer silently skip a slot
+
+A cron keepalive fired only if a scheduler tick landed on the slot's exact
+minute, and nothing ever caught up afterwards. So a slot was lost whenever that
+one tick missed it: a tick still busy with the previous ping, an earlier
+account's `claude -p` running the next account past the minute (reproduced in
+`quota-autoping-cron.test.js`: two accounts on one slot, a 70 s ping, the second
+account never pinged), or a pod restart across it. A keepalive meant to open a
+5h window on a fixed clock is worthless when it skips.
+
+- A slot now fires late rather than never: the scheduler takes the latest slot
+  in the last `cronCatchUpMinutes` (15) that has not fired yet. The fire key is
+  the slot's own minute, so a late slot still fires once.
+- A failed ping is recorded (`lastCronFailedAt`) but never as the fire key, so
+  it is retried after the 5-minute cooldown, inside the same window.
+- The log line says how late a slot fired (`… (0 7 * * *, 3m late)`).
+- The Claude Code accounts card shows the last keepalive, sent or failed, in the
+  schedule's timezone, and the schedule badge names its timezone. An unset one
+  reads "server time", which in the container is UTC — the easiest way for a
+  schedule to run at the wrong hour.
 
 ### Features
 
@@ -69,6 +92,33 @@ Known and not changed here: with the flag off, and on the first turn of a
 session, the replayed history still reaches the model folded as above. See
 docs/fable/2026-09-24-claude-cli-prompt-cache-design.md.
 
+#### API Key Usage page: a per-key time series, a table of its own, and CSV export
+
+The per-key breakdown used to be three clicks into the general Usage page's
+table. It gets its own menu entry (`/dashboard/api-key-usage`), a stacked bar
+chart of tokens per key over time, and a CSV export of the same table the
+page renders.
+
+- `GET /api/usage/api-keys?period=<period>` returns `{ series, keys }` for
+  the chart; `&format=csv` streams the key x model table as RFC-4180 CSV
+  from the same `byApiKey` the table renders, so the file and the screen
+  cannot disagree.
+- The chart and the table key on one identity function, `apiKeyBucketId`
+  (`src/lib/db/repos/apiKeyUsageRepo.js`): a live key's UUID, an 8-hex-char
+  SHA-256 prefix of the raw key for a deleted one, or the literal
+  `local-no-key` — never the raw key, and never the masked form either (see
+  the fix below for why the masked form can't be used as an identity).
+- The table itself is the existing one: `UsageStats.js`'s API-key column
+  definitions and render functions were exported rather than copied, so the
+  two pages cannot drift apart.
+
+**Not verified by running it.** Only the data layer (`apiKeyUsageRepo.js`,
+the route, and the re-keying in `usageRepo.js` below) is covered by tests.
+The page and the chart have not been built or rendered — no jsdom or
+component-test infrastructure exists in this repo, and a build was off the
+table for this task — so their correctness is static (props, exports and
+route shapes read by eye), not observed.
+
 ### Removed
 
 #### The ChatGPT Web provider, and its bridge container
@@ -105,6 +155,41 @@ the runtime entrypoint is upstream's again and that Dockerfile hunk stops being
 a merge conflict.
 
 The Claude Code CLI provider is unaffected.
+
+### Fixes
+
+#### `/api/usage/stats` was returning every raw API key as a JSON property name
+
+`stats.byApiKey` was keyed `${rawApiKey}|${model}|${provider}` in the HTTP
+response, not just in storage — so every raw API key that had ever made a
+request rode along on every poll of the Usage page, and the dashboard copied
+those keys straight into client-side React state. A deleted key's row also
+fell back to `apiKey.slice(0, 8) + "..."` for its label, the same prefix
+`maskApiKey` shows elsewhere — no new information, but still a slice of the
+real key sitting in a table cell.
+
+Fixed by introducing one identity function, `apiKeyBucketId` (also the base
+for the API Key Usage chart above): a live key's id from the API-keys table,
+an 8-hex-char SHA-256 prefix of the raw key for a key that has since been
+deleted, or `local-no-key`. `getUsageStats`'s response is re-keyed on all
+three code paths that build `byApiKey` — the daily rollup, the
+`usageHistory` overlay that updates `lastUsed`, and the raw-row 24h/today
+path — and deleted-key labels changed to `(deleted) <hash>`.
+
+**The stored aggregate is untouched on purpose.** `usageDaily.data.byApiKey`
+in SQLite is still keyed `${rawApiKey}|${model}|${provider}` — re-keying the
+store would orphan every day already accumulated. Only the value this
+function *returns*, which is what reaches the browser, is re-keyed.
+
+Not `maskApiKey` for the deleted-key fallback: every 9Router API key is
+`sk-${machineId}-${keyId}-${crc}` (`generateApiKeyWithMachine`,
+`shared/utils/apiKey.js`) and `machineId` is constant for an install, so
+`maskApiKey`'s first 8 characters are identical for every key on that
+machine — every deleted key would have collapsed into one bucket, in both
+the table and the chart. Covered by
+`tests/unit/usage-stats-no-raw-keys.test.js` (behavioral: no raw key appears
+in any property name of the response) and the updated AUDIT-002 assertion in
+`tests/unit/security-audit.test.js` (source guard).
 
 ## Earlier, on top of v0.5.81
 
