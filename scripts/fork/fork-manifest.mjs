@@ -54,6 +54,17 @@ export const ADDED_FILES = [
   "tests/unit/forced-sse-client-format.test.js",
   "tests/unit/agent-skills.test.js",
   "tests/real/claude-cli.real.test.js",
+  // per-API-key usage stats: time series + CSV export for the API Key Usage page
+  "src/lib/db/repos/apiKeyUsageRepo.js",
+  "src/app/api/usage/api-keys/route.js",
+  "src/app/(dashboard)/dashboard/api-key-usage/page.js",
+  "src/app/(dashboard)/dashboard/api-key-usage/components/ApiKeyUsageChart.js",
+  "tests/unit/api-key-usage-bucket-id.test.js",
+  "tests/unit/api-key-usage-series.test.js",
+  "tests/unit/api-key-usage-csv.test.js",
+  "tests/unit/usage-stats-no-raw-keys.test.js",
+  "docs/fable/2026-09-25-api-key-usage-stats-design.md",
+  "docs/fable/2026-09-25-api-key-usage-stats-plan.md",
   // docs + tooling
   "AGENT-HANDOFF.md",
   "FORK-CHANGELOG.md",
@@ -232,6 +243,32 @@ export const PATCHED_FILES = [
     ],
     hint: "Imports, the cronScheduleTarget state, cron in the autoPing state + settings load, handleAutoPingSchedule, the autoPingSchedule prop on ConnectionRow, the modal near the other modals, and the two status cards in the isFreeNoAuth branch.",
   },
+  {
+    path: "src/lib/db/repos/usageRepo.js",
+    markers: ["./apiKeyUsageRepo.js", "apiKeyBucketId(r.apiKey, apiKeyMap)", "deletedKeyLabel("],
+    hint: "Imports apiKeyBucketId/deletedKeyLabel and re-keys stats.byApiKey away from the raw API key on all three code paths (the daily rollup, the usageHistory overlay that sets lastUsed, and the raw-row 24h/today path) plus the deleted-key keyName label. This is a security fix, not cosmetic: before it, every raw API key that had ever made a request reached the browser as a JSON property name on every /api/usage/stats poll. On conflict keep all three re-keyed sites plus upstream's changes to the surrounding aggregation. Do NOT re-key the stored composite in usageDaily.data.byApiKey (still `${rawApiKey}|${model}|${provider}`, unchanged on purpose) — only the response this function returns is re-keyed; re-keying the store would orphan every day already accumulated. Do NOT resolve the maskApiKey duplication by importing it from here into apiKeyUsageRepo.js — this file already imports FROM apiKeyUsageRepo.js, so the reverse import closes a cycle; apiKeyUsageRepo.js keeps its own private copy deliberately.",
+  },
+  {
+    path: "src/shared/components/UsageStats.js",
+    markers: [
+      "export function sortData",
+      "export function groupDataByKey",
+      "export const API_KEY_COLUMNS",
+      "renderApiKeySummaryCells",
+      "renderApiKeyDetailCells",
+    ],
+    hint: "sortData, groupDataByKey, API_KEY_COLUMNS and the API-key table's two render functions moved from private/inline to exported module scope so the API Key Usage page (src/app/(dashboard)/dashboard/api-key-usage/) renders the exact same table instead of a copy that drifts. On conflict keep the exports; the `case \"apiKey\":` branch inside this file still calls back into renderApiKeySummaryCells/renderApiKeyDetailCells by reference, so both sides need to survive together.",
+  },
+  {
+    path: "src/shared/components/Sidebar.js",
+    markers: ["/dashboard/api-key-usage"],
+    hint: "One nav entry, above Quota Tracker. Keep it alongside any upstream nav additions.",
+  },
+  {
+    path: "tests/unit/security-audit.test.js",
+    markers: ["apiKeyBucketId(r.apiKey, apiKeyMap)"],
+    hint: "AUDIT-002's assertion was updated to match usageRepo.js's re-keying: it now checks the source for `apiKeyBucketId(r.apiKey, apiKeyMap)` rather than the old `${apiKeyMasked}|${r.model}|${r.provider` template. This is the source-guard companion to tests/unit/usage-stats-no-raw-keys.test.js (behavioral). If upstream also touches this file's AUDIT-002 test, keep the fork's assertion text.",
+  },
 ];
 
 /**
@@ -257,6 +294,10 @@ export const FORK_TESTS = [
   "unit/concurrency-gate.test.js",
   "unit/quota-autoping-cron.test.js",
   "unit/forced-sse-client-format.test.js",
+  "unit/api-key-usage-bucket-id.test.js",
+  "unit/api-key-usage-series.test.js",
+  "unit/api-key-usage-csv.test.js",
+  "unit/usage-stats-no-raw-keys.test.js",
 ];
 
 /** Live tests; skipped unless REAL_CLI_TESTS=1 and Claude Code is installed. */
