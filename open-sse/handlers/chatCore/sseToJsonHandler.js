@@ -350,15 +350,23 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       }
     }
 
-    // A Responses-format client (e.g. Codex) forced this provider to stream,
-    // but wants JSON back. parseSSEToOpenAIResponse yields a Chat Completions
-    // body; convert it to the Responses `output` shape so tool_calls are not
-    // lost on the non-streaming return path. Inlined (not imported from
-    // nonStreamingHandler.js) to avoid a circular import: nonStreamingHandler
-    // already imports parseSSEToOpenAIResponse from this module.
-    const finalBody = sourceFormat === FORMATS.OPENAI_RESPONSES
-      ? chatCompletionToResponses(parsed, customToolNames)
-      : parsed;
+    // The client forced this provider to stream but wants JSON back, and
+    // parseSSEToOpenAIResponse yields a Chat Completions body. Anything other
+    // than an OpenAI-format client needs that converted to its own shape —
+    // a Claude client (/v1/messages, stream:false) was otherwise handed an
+    // OpenAI body it cannot parse.
+    //
+    // Responses stays on the inlined converter; the rest reuse the shared
+    // translator, imported dynamically because nonStreamingHandler.js imports
+    // parseSSEToOpenAIResponse from this module and a static import would make
+    // that a load-time cycle.
+    let finalBody = parsed;
+    if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
+      finalBody = chatCompletionToResponses(parsed, customToolNames);
+    } else if (sourceFormat && sourceFormat !== FORMATS.OPENAI) {
+      const { translateNonStreamingResponse } = await import("./nonStreamingHandler.js");
+      finalBody = translateNonStreamingResponse(parsed, FORMATS.OPENAI, sourceFormat, customToolNames);
+    }
 
     return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalBody, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
   } catch (err) {
