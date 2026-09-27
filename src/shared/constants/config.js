@@ -73,6 +73,11 @@ export const QUOTA_AUTOPING_CONFIG = {
   cronPingText: "Only Hi",
   cronMaxExpressions: 12,               // per connection — guards the settings blob
   cronFailureCooldownMs: 300000,
+  // How late a missed slot may still fire. A tick can miss a slot's exact
+  // minute (busy tick, an earlier account's slow `claude -p`, a pod restart);
+  // without catch-up that 5h window is simply never opened. Kept at least two
+  // failure cooldowns wide so a failed ping gets retried more than once.
+  cronCatchUpMinutes: 15,
   // A CLI ping is drained inline inside the tick; without its own deadline a
   // hung `claude -p` would suspend every provider's pings behind it.
   cliPingTimeoutMs: 60000,
