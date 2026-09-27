@@ -117,8 +117,73 @@ change how the CLI places its breakpoint, which would show as
 `cache-miss-on-resume` lines and a falling "Prompt cache" share on the quota
 card. The image pins the CLI version; a desktop host does not.
 
+## API Key Usage page
+
+`Dashboard → API Key Usage` (`/dashboard/api-key-usage`) is a per-API-key
+breakdown that used to be three clicks into the general Usage page: a stacked
+bar chart of tokens per key over a period, plus the same key x model table
+Usage already had, now with a CSV export. Nothing here is provider- or
+deployment-specific — it reads the same `usageHistory`/`usageDaily` tables
+every other usage view reads.
+
+- **Neither table is pruned.** `usageHistory` (one row per request) and
+  `usageDaily` (one JSON blob per day) have no retention policy, no
+  `DELETE`, no row cap — confirmed by grep, not assumed. They grow for as
+  long as the install runs. `usageHistory` has an in-memory `RING_CAP` (50)
+  for the "Recent Requests" widget and a `LIMIT 50` on one read query, but
+  neither trims the table itself. This page didn't create that shape — every
+  other usage view already reads the same unbounded tables — but it's worth
+  saying plainly here since this page is the reason someone will eventually
+  go looking for a retention policy that doesn't exist.
+- **A deleted API key is identified by a hash, not by its masked prefix.**
+  Every 9Router key is `sk-${machineId}-${keyId}-${crc}`
+  (`generateApiKeyWithMachine`, `shared/utils/apiKey.js`); `machineId` is
+  constant per install, so `maskApiKey`'s first-8-characters form is
+  identical for every key on that machine. A deleted key (no row left in the
+  API-keys table to join against) instead gets an 8-hex-char prefix of
+  `sha256(rawKey)` — distinct per key, stable across calls, reveals nothing
+  about the raw key. This is `apiKeyBucketId`'s fallback in
+  `src/lib/db/repos/apiKeyUsageRepo.js`, and it is the *only* thing keeping
+  two different deleted keys from rendering as one merged row in both the
+  table and the chart.
+- **One identity function, three call sites — but the table doesn't use it.**
+  `apiKeyBucketId` is imported by `usageRepo.js` (the table's `byApiKey`) and
+  used directly by `apiKeyUsageRepo.js`'s own `getApiKeyUsageSeries` (the
+  chart) — both keyed the same way. The table (`page.js:124`) then groups by
+  `keyName`, not by that bucket id, and `createApiKey`
+  (`src/lib/db/repos/apiKeysRepo.js:28-47`) enforces no name uniqueness — no
+  check, no unique index. So two keys that happen to share a name already
+  render inconsistently today, not just after some future edit: the chart
+  draws two segments in two colours with two legend entries; the table merges
+  both into one summed row; the CSV export has two rows with identical
+  key/model/provider triples and different numbers, with no column to tell
+  them apart. This is pre-existing grouping behavior shared with the Usage
+  page and is not fixed here. `maskApiKey` itself is duplicated, not
+  imported, in `apiKeyUsageRepo.js`: that file already imports the other way,
+  so pulling `maskApiKey` back out of `usageRepo.js` would close a module
+  cycle. See that file's docblocks before "fixing" either of these.
+- **The raw API key never became the response's re-keying problem for this
+  page specifically** — that was an existing bug in `usageRepo.js` shared by
+  the general Usage page too; see FORK-CHANGELOG.md's Fixes entry. This page
+  just also depends on the fix, since its chart uses the same
+  `apiKeyBucketId` identity.
+
+**Not built, not rendered.** No jsdom or component-test infrastructure exists
+in this repo, and a `next build`/server start was off-limits for this task.
+The data layer (`apiKeyUsageRepo.js`, the route, the re-keying in
+`usageRepo.js`) is covered by tests; the page (`page.js`) and the chart
+(`ApiKeyUsageChart.js`) are verified only by reading — the props passed to
+`UsageTable` (`renderSummaryCells`, `renderDetailCells`, `storageKey`,
+`emptyMessage`) and to the chart (`series`, `keys`, `loading`) were checked
+against their definitions, not against a rendered page. Do not mistake this
+for verified UI.
+
 ## Not verified
 
 - **No image has been built from this tree on the machine that wrote it.** The
   production `next build` completes, but `docker build` has not been run here.
 - **No cluster has been reached.** The Kubernetes bundle is checked statically.
+- **The API Key Usage page and its chart have never been rendered, built, or
+  put in front of a browser** — unlike the items above, there is no partial
+  verification here at all (no jsdom, no component tests, no server start).
+  See "API Key Usage page" above for exactly what was and wasn't checked.

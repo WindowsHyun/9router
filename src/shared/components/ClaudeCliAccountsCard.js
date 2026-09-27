@@ -11,6 +11,7 @@ import Input from "./Input";
 // it because every use is inside a render, not at module scope.
 import AutoPingScheduleModal from "./AutoPingScheduleModal";
 import { AUTO_PING_SETTINGS_KEYS } from "@/shared/constants/config";
+import { describeKeepalive, formatKeepaliveTime } from "@/shared/utils/keepaliveStatus";
 
 const ENDPOINT = "/api/cli-tools/claude-cli-accounts";
 const PROVIDER = "claude-cli";
@@ -289,6 +290,7 @@ export default function ClaudeCliAccountsCard() {
                 {a.kind === "token" ? "Authenticated with a setup token" : a.configDir}
                 {!a.identity?.email && " — press Check to confirm it works and read the account"}
               </div>
+              <KeepaliveStatus keepalive={a.keepalive} schedule={cron[a.id]} />
             </div>
             <div className="flex gap-2 shrink-0 flex-wrap">
               {!a.signedIn && a.kind !== "token" && (
@@ -331,9 +333,29 @@ export default function ClaudeCliAccountsCard() {
   );
 }
 
-// "0 */5 * * * · 30 2 * * *", or nothing when the schedule is off or unset.
+// "0 */5 * * * · 30 2 * * * (Asia/Seoul)", or nothing when the schedule is off
+// or unset. The zone is shown because an unset one runs on the server's clock.
 function scheduleSummary(entry) {
   const expressions = Array.isArray(entry?.expressions) ? entry.expressions.filter(Boolean) : [];
   if (!expressions.length || entry?.enabled === false) return "";
-  return expressions.join(" · ");
+  return `${expressions.join(" · ")} (${entry?.timezone || "server time"})`;
+}
+
+const KEEPALIVE_TONE_CLASS = {
+  ok: "text-green-500",
+  failed: "text-red-500",
+  pending: "text-text-muted",
+};
+
+// Whether the scheduled keepalive actually went out — until now only the
+// server log could tell.
+function KeepaliveStatus({ keepalive, schedule }) {
+  const status = describeKeepalive(keepalive, schedule);
+  if (!status) return null;
+  return (
+    <div className={`text-[11px] mt-1 ${KEEPALIVE_TONE_CLASS[status.tone]}`}>
+      {status.label}
+      {status.at ? ` · ${formatKeepaliveTime(status.at, status.timezone)}` : ""}
+    </div>
+  );
 }

@@ -5,6 +5,7 @@ import {
   cronMatches,
   cronFireKey,
   firstMatchingExpression,
+  latestDueFire,
   zonedParts,
 } from "@/shared/services/cronMatcher";
 import { readCronEntry, runCronPing, runQuotaAutoPingTick, configureQuotaAutoPing, stopQuotaAutoPing } from "@/shared/services/quotaAutoPing";
@@ -169,7 +170,13 @@ describe("runCronPing", () => {
   it("records a failure and does not mark the minute as fired", async () => {
     const h = harness({ handler: { sendPing: vi.fn(async () => false) } });
     await runCronPing(h.connection, "claude", h.providerConfig, h.handler, cron, h.deps, h.state, at("2026-09-21T09:00:00Z"));
-    expect(h.deps.updateProviderConnection).not.toHaveBeenCalled();
+    // The failure is recorded so the dashboard can show it — but never as the
+    // fire key, or the retry inside the catch-up window would be suppressed.
+    expect(h.deps.updateProviderConnection).toHaveBeenCalledTimes(1);
+    const update = h.deps.updateProviderConnection.mock.calls[0][1];
+    expect(update.lastCronFireKey).toBeUndefined();
+    expect(update.lastCronFailedAt).toBeTruthy();
+    expect(update.lastCronFailedFor).toBe(cronFireKey("0 9 * * *", at("2026-09-21T09:00:00Z"), "UTC"));
     expect(h.state.failureCache["cron:claude:conn-1"]).toBeTruthy();
   });
 
@@ -377,7 +384,9 @@ describe("claude-cli schedules (local credentials)", () => {
   it("treats an error frame in the stream as a failed ping", async () => {
     const h = cliHarness({ settings: cronOnly, body: "data: {\"error\":\"claude_cli_error\"}\n\n" });
     await runQuotaAutoPingTick(h.deps, h.state);
-    expect(h.deps.updateProviderConnection).not.toHaveBeenCalled();
+    expect(h.deps.updateProviderConnection).toHaveBeenCalledTimes(1);
+    expect(h.deps.updateProviderConnection.mock.calls[0][1].lastCronFireKey).toBeUndefined();
+    expect(h.deps.updateProviderConnection.mock.calls[0][1].lastCronFailedAt).toBeTruthy();
     expect(h.state.failureCache["cron:claude-cli:cli-1"]).toBeTruthy();
   });
 
@@ -399,5 +408,110 @@ describe("claude-cli schedules (local credentials)", () => {
     await runQuotaAutoPingTick(h.deps, h.state);
     expect(h.executed[0].credentials.providerSpecificData.configDir)
       .toBe("/home/node/.claude-acct-1");
+  });
+});
+
+// A schedule that fires only on its exact minute loses the whole slot whenever
+// that one tick does not reach it: a tick still busy with a previous ping, an
+// earlier account's `claude -p` pushing the next one past the minute, or a pod
+// restart across it. For a keepalive meant to open a 5h window on a fixed
+// clock, a skipped slot is the whole point lost — so a missed slot is caught up.
+describe("latestDueFire (catch-up)", () => {
+  const ex = ["0 7 * * *", "0 12 * * *"];
+
+  it("returns the slot on its own minute", () => {
+    const due = latestDueFire(ex, at("2026-09-21T07:00:20Z"), "UTC", 15);
+    expect(due.expression).toBe("0 7 * * *");
+    expect(due.at.toISOString()).toBe("2026-09-21T07:00:00.000Z");
+  });
+
+  it("still returns a slot a few minutes late, dated to when it was due", () => {
+    const due = latestDueFire(ex, at("2026-09-21T07:09:45Z"), "UTC", 15);
+    expect(due.expression).toBe("0 7 * * *");
+    expect(due.at.toISOString()).toBe("2026-09-21T07:00:00.000Z");
+  });
+
+  it("gives up on a slot older than the window", () => {
+    expect(latestDueFire(ex, at("2026-09-21T07:16:00Z"), "UTC", 15)).toBeNull();
+  });
+
+  it("returns the most recent slot when two fall inside the window", () => {
+    const due = latestDueFire(["0 7 * * *", "5 7 * * *"], at("2026-09-21T07:06:00Z"), "UTC", 15);
+    expect(due.expression).toBe("5 7 * * *");
+  });
+
+  it("evaluates the window in the schedule's timezone", () => {
+    // 07:00 KST is 22:00 UTC the previous day.
+    const due = latestDueFire(["0 7 * * *"], at("2026-09-20T22:04:00Z"), "Asia/Seoul", 15);
+    expect(due.at.toISOString()).toBe("2026-09-20T22:00:00.000Z");
+    expect(latestDueFire(["0 7 * * *"], at("2026-09-21T07:04:00Z"), "Asia/Seoul", 15)).toBeNull();
+  });
+
+  it("with a zero window behaves like the exact-minute match", () => {
+    expect(latestDueFire(ex, at("2026-09-21T07:00:59Z"), "UTC", 0).expression).toBe("0 7 * * *");
+    expect(latestDueFire(ex, at("2026-09-21T07:01:00Z"), "UTC", 0)).toBeNull();
+  });
+});
+
+describe("runCronPing catch-up", () => {
+  const cron = { expressions: ["0 9 * * *"], timezone: "UTC", text: "Only Hi", via: "api" };
+  const slotKey = cronFireKey("0 9 * * *", at("2026-09-21T09:00:00Z"), "UTC");
+
+  it("fires a slot the tick missed, keyed to the slot rather than the late minute", async () => {
+    const h = harness();
+    await runCronPing(h.connection, "claude", h.providerConfig, h.handler, cron, h.deps, h.state, at("2026-09-21T09:07:00Z"));
+    expect(h.handler.sendPing).toHaveBeenCalledTimes(1);
+    expect(h.deps.updateProviderConnection.mock.calls[0][1].lastCronFireKey).toBe(slotKey);
+  });
+
+  it("does not fire the same slot again later in the window", async () => {
+    const h = harness({ connection: { lastCronFireKey: slotKey } });
+    await runCronPing(h.connection, "claude", h.providerConfig, h.handler, cron, h.deps, h.state, at("2026-09-21T09:08:00Z"));
+    expect(h.handler.sendPing).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed slot once the cooldown has passed, inside the window", async () => {
+    const h = harness();
+    h.state.failureCache["cron:claude:conn-1"] = at("2026-09-21T09:00:00Z").getTime();
+    const cooled = at("2026-09-21T09:00:00Z").getTime() + QUOTA_AUTOPING_CONFIG.cronFailureCooldownMs + 1000;
+    await runCronPing(h.connection, "claude", h.providerConfig, h.handler, cron, h.deps, h.state, new Date(cooled));
+    expect(h.handler.sendPing).toHaveBeenCalledTimes(1);
+    expect(h.deps.updateProviderConnection.mock.calls[0][1].lastCronFireKey).toBe(slotKey);
+  });
+
+  it("does not fire a slot that is past the window", async () => {
+    const h = harness();
+    const late = at("2026-09-21T09:00:00Z").getTime() + (QUOTA_AUTOPING_CONFIG.cronCatchUpMinutes + 1) * 60000;
+    await runCronPing(h.connection, "claude", h.providerConfig, h.handler, cron, h.deps, h.state, new Date(late));
+    expect(h.handler.sendPing).not.toHaveBeenCalled();
+  });
+
+  it("leaves room for more than one retry before the window closes", () => {
+    const { cronCatchUpMinutes, cronFailureCooldownMs } = QUOTA_AUTOPING_CONFIG;
+    expect(cronCatchUpMinutes * 60000).toBeGreaterThanOrEqual(2 * cronFailureCooldownMs);
+  });
+});
+
+describe("runQuotaAutoPingTick catch-up across accounts", () => {
+  afterEach(() => vi.useRealTimers());
+
+  // Each ping takes real time, so on a shared slot a later account used to be
+  // evaluated after the minute had rolled over, matched nothing, and lost its
+  // window entirely.
+  it("still pings a later account after an earlier one's ping crossed the minute", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(at("2026-09-21T09:00:30Z"));
+    const schedule = { enabled: true, expressions: ["0 9 * * *"], timezone: "UTC", text: "Only Hi" };
+    const sendPing = vi.fn(async () => {
+      vi.setSystemTime(new Date(Date.now() + 70000)); // a slow ping
+      return true;
+    });
+    const h = tickHarness({
+      settings: { claudeAutoPing: { connections: {}, cron: { "conn-1": schedule, "conn-2": schedule } } },
+      connections: [oauthConn(), oauthConn({ id: "conn-2" })],
+      handler: { sendPing },
+    });
+    await runQuotaAutoPingTick(h.deps, h.state);
+    expect(sendPing).toHaveBeenCalledTimes(2);
   });
 });
