@@ -404,15 +404,56 @@ When the user says 'ping', reply with exactly one word: GIRAFFE`,
     forced.status === 400 && /tool_choice/.test(forced.body),
     `status=${forced.status} body=${forced.body.slice(0, 250)}`);
 
+  // Structured output is carried, not refused: the CLI takes `--json-schema`.
+  // The answer comes back as the content, and only the content.
+  const asJson = (text) => { try { return JSON.parse(text); } catch { return undefined; } };
   const jsonMode = await complete({
     model: MODEL,
-    messages: [{ role: "user", content: "hi" }],
+    messages: [{ role: "user", content: "Give me a JSON object with a name and an age for a fictional person." }],
     response_format: { type: "json_object" },
     stream: false,
   });
-  check("...and so is a structured-output request it cannot guarantee",
-    jsonMode.status === 400 && /JSON/.test(jsonMode.body),
-    `status=${jsonMode.status} body=${jsonMode.body.slice(0, 250)}`);
+  const jsonModeText = jsonMode.json?.choices?.[0]?.message?.content || "";
+  check("response_format json_object is answered with a JSON object",
+    jsonMode.status === 200 && typeof asJson(jsonModeText) === "object" && asJson(jsonModeText) !== null,
+    `status=${jsonMode.status} content=${JSON.stringify(jsonModeText).slice(0, 200)}`);
+
+  const schemaMode = await complete({
+    model: MODEL,
+    messages: [{ role: "user", content: "What is 2+2?" }],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "math",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: { answer: { type: "number" } },
+          required: ["answer"],
+          additionalProperties: false,
+        },
+      },
+    },
+    stream: false,
+  });
+  const schemaText = schemaMode.json?.choices?.[0]?.message?.content || "";
+  check("response_format json_schema is answered with exactly that schema's JSON",
+    schemaMode.status === 200 && asJson(schemaText)?.answer === 4
+      && schemaMode.json?.choices?.[0]?.finish_reason === "stop"
+      && !schemaMode.json?.choices?.[0]?.message?.tool_calls?.length,
+    `status=${schemaMode.status} body=${schemaMode.body.slice(0, 250)}`);
+
+  // What still cannot be promised is refused, not quietly ignored.
+  const jsonWithTools = await complete({
+    model: MODEL,
+    messages: [ASK],
+    tools: TOOLS,
+    response_format: { type: "json_object" },
+    stream: false,
+  });
+  check("...but structured output together with tools is refused, with a reason",
+    jsonWithTools.status === 400 && /response_format/.test(jsonWithTools.body),
+    `status=${jsonWithTools.status} body=${jsonWithTools.body.slice(0, 250)}`);
 
   // 6e. The one part of tool_choice this provider can implement.
   const noTools = await complete({

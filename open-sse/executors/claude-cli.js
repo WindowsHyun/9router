@@ -51,6 +51,9 @@ import {
   CLAUDE_CLI_IDLE_TIMEOUT_MS,
   CLAUDE_CLI_MCP_TOOL_PREFIX,
   CLAUDE_CLI_MODEL_PATTERN,
+  CLAUDE_CLI_STRUCTURED_FAILURE_STATUS,
+  CLAUDE_CLI_STRUCTURED_FAILURE_SUBTYPES,
+  CLAUDE_CLI_STRUCTURED_OUTPUT_TOOL,
   CLAUDE_CLI_DEFAULT_SYSTEM_PROMPT,
   CLAUDE_CLI_CHILD_ENV,
   CLAUDE_CLI_ENV_ALLOWLIST,
@@ -88,6 +91,7 @@ import {
   generationExtraBody,
   ignoredRequestFields,
   outputTokenCeiling,
+  structuredOutputSchema,
   toolsAreWanted,
   unsupportedRequestFeature,
 } from "./claudeCliRequestSupport.js";
@@ -275,7 +279,7 @@ export function buildClaudeCliPrompt(messages) {
  * (Nothing is ever spawned through a shell, so argv itself is not an injection
  * surface — see buildSpawnPlan.)
  */
-export function planClaudeCliInvocation({ model, messages, maxTurns, tools }) {
+export function planClaudeCliInvocation({ model, messages, maxTurns, tools, jsonSchema }) {
   const { system, prompt } = buildClaudeCliPrompt(messages);
   // Advertised to the CLI through MCP, never executed here — see
   // claudeCliTools.js. It leaves the plan as data so the spawn can write it to
@@ -299,7 +303,7 @@ export function planClaudeCliInvocation({ model, messages, maxTurns, tools }) {
   const replayed = Boolean(replay.frames);
 
   return {
-    args: buildClaudeCliArgs({ model, maxTurns: turnLimit, streamJsonInput: replayed }),
+    args: buildClaudeCliArgs({ model, maxTurns: turnLimit, streamJsonInput: replayed, jsonSchema }),
     stdin: replayed ? framesToStdin(replay.frames) : prompt,
     // Recorded with the request so a looping client can be diagnosed from the
     // dashboard instead of from a guess.
@@ -330,7 +334,7 @@ export function resolveClaudeCliModel(model) {
 
 export function buildClaudeCliArgs({
   model, system, systemPromptFile, settingsFile, maxTurns, mcpConfigFile, streamJsonInput,
-  sessionId, resumeId,
+  sessionId, resumeId, jsonSchema,
 } = {}) {
   const args = [
     "-p",
@@ -373,6 +377,11 @@ export function buildClaudeCliArgs({
   // The caller's tools, behind the inert MCP server. Omitted entirely when the
   // request has none, so a plain chat spawns no extra process.
   if (mcpConfigFile) args.push("--mcp-config", mcpConfigFile);
+  // `response_format`, in the CLI's own terms. The answer then comes back
+  // through a tool of the CLI's rather than as text — see translateClaudeCliEvent.
+  // One argv element, never a shell string (buildSpawnPlan), so its content
+  // cannot introduce a second argument.
+  if (jsonSchema) args.push("--json-schema", jsonSchema);
   return args;
 }
 
@@ -467,7 +476,9 @@ export function cacheUsageSummary(usage) {
  * gives it — a hand-rolled copy would drift from the real one, and the tool
  * bookkeeping is exactly where that would go unnoticed.
  */
-export function createClaudeCliContext({ id, created, model, toolNames = null, tokenCeiling = false }) {
+export function createClaudeCliContext({
+  id, created, model, toolNames = null, tokenCeiling = false, structured = false,
+}) {
   return {
     id,
     created,
@@ -475,6 +486,11 @@ export function createClaudeCliContext({ id, created, model, toolNames = null, t
     roleSent: false,
     stopReason: null,
     usage: null,
+    // Whether this request asked for structured output (`--json-schema`). The
+    // answer then arrives as the input of the CLI's own StructuredOutput tool
+    // and in the result's `structured_output`, never as text: text is left
+    // out, and that tool is not a call for the client to run.
+    structured,
     // Whether this request asked for a bounded answer. The CLI flags a turn its
     // output ceiling cut short as an error, content and all, and that content is
     // exactly what the caller asked for — just less of it.
@@ -518,10 +534,18 @@ export function createClaudeCliContext({ id, created, model, toolNames = null, t
  * empty turn and tries the same step again, which is what "it just loops"
  * looks like from outside. So the message also goes out as ordinary content,
  * followed by a finish that every format carries.
+ *
+ * `status` is for a failure that belongs to the request rather than the
+ * account. A non-streaming client gets the error back as an HTTP response whose
+ * status is read from this frame (sseToJsonHandler), and the account loop locks
+ * and fails over on it: with none the status is 502, which costs the account 30
+ * seconds for a schema it was never at fault for. Omitted, nothing changes.
  */
-export function errorFrames(ctx, message, code) {
+export function errorFrames(ctx, message, code, status) {
   const text = `[9Router] ${message}`;
-  const frames = [sseChunk({ error: { message: String(message), type: "claude_cli_error", code } })];
+  const frames = [sseChunk({
+    error: { message: String(message), type: "claude_cli_error", code, ...(status ? { status } : {}) },
+  })];
   const delta = ctx.roleSent ? { content: `\n${text}` } : { role: "assistant", content: text };
   ctx.roleSent = true;
   const chunkFor = (d, finishReason = null) => chatChunkSse({
@@ -530,6 +554,19 @@ export function errorFrames(ctx, message, code) {
   frames.push(chunkFor(delta));
   frames.push(chunkFor({}, "stop"));
   return frames;
+}
+
+/**
+ * The JSON text a structured turn answered with, or null when it gave none.
+ *
+ * `structured_output` is the CLI's own copy of what the model passed to its
+ * StructuredOutput tool, after validation — the only thing here that has been
+ * checked against the caller's schema. `result` is not taken even when it parses:
+ * it is also what the model writes if it never calls the tool.
+ */
+function structuredAnswer(event) {
+  const output = event.structured_output;
+  return output !== undefined && output !== null ? JSON.stringify(output) : null;
 }
 
 /**
@@ -545,6 +582,13 @@ export function translateClaudeCliEvent(event, ctx) {
     ctx.sawStreamEvent = true;
     const inner = event.event;
     if (inner?.type === "content_block_start" && inner.content_block?.type === "tool_use") {
+      // The CLI's own channel for a structured answer, not a call the client
+      // could run or even knows the name of. Its input is delivered from the
+      // result below, once the CLI has validated it against the schema —
+      // streaming the fragments would hand over JSON that may still be refused.
+      if (ctx.structured && inner.content_block.name === CLAUDE_CLI_STRUCTURED_OUTPUT_TOOL) {
+        return { frames, finished: false };
+      }
       // The model proposes, the client executes. Opening the call as soon as
       // the block starts — rather than waiting for the whole thing — is what
       // every other provider does, and it lets the client read the name while
@@ -567,7 +611,9 @@ export function translateClaudeCliEvent(event, ctx) {
       else chunk({ tool_calls: [call] });
     } else if (inner?.type === "content_block_delta") {
       const delta = inner.delta || {};
-      if (delta.type === "text_delta" && delta.text) {
+      // Not in a structured turn: the caller asked for JSON and nothing else, so
+      // whatever the model says around the call is not part of the answer.
+      if (delta.type === "text_delta" && delta.text && !ctx.structured) {
         ctx.streamedText += delta.text;
         ctx.sentAnswer = true;
         if (!ctx.roleSent) { ctx.roleSent = true; chunk({ role: "assistant", content: delta.text }); }
@@ -611,6 +657,10 @@ export function translateClaudeCliEvent(event, ctx) {
   if (event?.type === "assistant") {
     const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
     for (const block of blocks) {
+      // Same two rules as the streamed form above: no prose in a structured
+      // turn, and the CLI's own StructuredOutput call is not the client's.
+      if (ctx.structured && block?.type === "text") continue;
+      if (ctx.structured && block?.type === "tool_use" && block.name === CLAUDE_CLI_STRUCTURED_OUTPUT_TOOL) continue;
       if (block?.type === "text" && block.text && !ctx.streamedText.includes(block.text)) {
         ctx.sentAnswer = true;
         if (!ctx.roleSent) { ctx.roleSent = true; chunk({ role: "assistant", content: block.text }); }
@@ -701,10 +751,43 @@ export function translateClaudeCliEvent(event, ctx) {
       const message = event.error || errorText || event.startup_failure_reason
         || event.result || `Claude CLI returned ${event.subtype}`;
       const code = event.subtype !== "success" ? event.subtype : "upstream_error";
-      frames.push(...errorFrames(ctx, message, code));
+      // A structured turn the CLI could not get valid output from failed on this
+      // request's own schema and prompt, not on the account — see
+      // CLAUDE_CLI_STRUCTURED_FAILURE_STATUS for what a 502 would have cost.
+      const status = ctx.structured && CLAUDE_CLI_STRUCTURED_FAILURE_SUBTYPES.includes(event.subtype)
+        ? CLAUDE_CLI_STRUCTURED_FAILURE_STATUS
+        : undefined;
+      frames.push(...errorFrames(ctx, message, code, status));
       return { frames, finished: true };
     }
     if (event.usage) ctx.usage = { ...ctx.usage, ...event.usage };
+    // A structured turn is answered from the validated output or not at all.
+    // Falling back to `result` the way a plain turn does would hand a caller who
+    // asked for JSON whatever the model wrote instead, as though it were the
+    // JSON: only structured_output has been through the CLI's validation.
+    if (ctx.structured) {
+      const answer = structuredAnswer(event);
+      if (answer === null) {
+        const cutShort = hitTokenCeiling || ceilingCutItShort;
+        frames.push(...errorFrames(
+          ctx,
+          "Claude CLI finished without returning the structured output that was asked for"
+            + (cutShort ? ": the answer was cut short by max_tokens, so the JSON is incomplete — raise it." : "."),
+          "structured_output_missing",
+          CLAUDE_CLI_STRUCTURED_FAILURE_STATUS,
+        ));
+        return { frames, finished: true };
+      }
+      // Delivered whole, so it finishes as a completed answer whatever the turn
+      // reported. The turn ends on the CLI's own tool_use (stop_reason
+      // "tool_use", is_error false — measured on 2.1.285), and a ceiling the CLI
+      // flagged leaves a validated output no less complete. A client shown
+      // "tool_calls" or "length" would reject a correct answer.
+      ctx.stopReason = "end_turn";
+      ctx.sentAnswer = true;
+      if (!ctx.roleSent) { ctx.roleSent = true; chunk({ role: "assistant", content: answer }); }
+      else chunk({ content: answer });
+    }
     // A non-streaming fallback: emit the final text if no delta ever arrived.
     // Not when the ceiling was hit: `result` is the CLI's error text there, and
     // handing that to the caller as the assistant's answer is worse than an
@@ -713,7 +796,7 @@ export function translateClaudeCliEvent(event, ctx) {
     // Thinking opens one and answers nothing, and a turn that ends there used
     // to reach the client empty — which is an agent with nothing to act on, and
     // the reason one kept retrying the same step.
-    if (!hitTokenCeiling && !ctx.sentAnswer && typeof event.result === "string" && event.result) {
+    if (!ctx.structured && !hitTokenCeiling && !ctx.sentAnswer && typeof event.result === "string" && event.result) {
       ctx.sentAnswer = true;
       if (!ctx.roleSent) { ctx.roleSent = true; chunk({ role: "assistant", content: event.result }); }
       else chunk({ content: event.result });
@@ -1016,6 +1099,9 @@ export class ClaudeCliExecutor extends BaseExecutor {
     if (unsupported) {
       return { response: errorResponse(unsupported.message, unsupported.code, 400) };
     }
+    // `response_format` in the CLI's own terms, or null. Already validated by
+    // unsupportedRequestFeature above, so what is left is safe to put on argv.
+    const jsonSchema = structuredOutputSchema(b);
     // Carried into the child through a settings file, which is the only way the
     // CLI takes them — it has no flags for temperature or a token ceiling.
     const extraBody = generationExtraBody(b);
@@ -1036,6 +1122,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
       // tool_choice "none" is honoured by not advertising them at all, which is
       // the one part of tool_choice this provider can actually implement.
       tools: toolsAreWanted(b) ? b.tools : undefined,
+      jsonSchema,
     });
     const stdin = invocation.stdin;
     // A request whose messages are all system or all blank leaves nothing to
@@ -1088,6 +1175,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
         + (invocation.manifest.length ? `, tools=${invocation.manifest.length}` : "")
         + (invocation.replayed ? `, replayed ${invocation.frameCount} turns` : ", flattened prompt")
         + (extraBody ? `, body=${Object.keys(extraBody).join("/")}` : "")
+        + (jsonSchema ? `, structured output (schema ${jsonSchema.length} chars)` : "")
     );
     // Wait for a spawn slot before opening the stream, so a burst queues instead
     // of starting N interpreters at once.
@@ -1113,9 +1201,21 @@ export class ClaudeCliExecutor extends BaseExecutor {
     // must not hold a session another request could have resumed.
     let session = null;
     try {
-      session = await planClaudeCliSession({
-        invocation, messages, model, account: credentials?.providerSpecificData || {}, log,
-      });
+      // Never for a structured turn. The CLI files that turn's transcript with
+      // its own StructuredOutput call and result in it, which is not what the
+      // client's history says happened; resuming it later — by this request or
+      // by an ordinary one that follows — would put a tool the turn never
+      // declares into the conversation. It runs as a whole conversation, fresh.
+      if (jsonSchema) {
+        // Said, so a structured turn that reprocesses a long history is not a mystery.
+        if (sessionCacheEnabled()) {
+          log?.info?.("CLAUDE-CLI", "session cache skipped: a structured-output request runs as a whole conversation");
+        }
+      } else {
+        session = await planClaudeCliSession({
+          invocation, messages, model, account: credentials?.providerSpecificData || {}, log,
+        });
+      }
     } catch (e) {
       // A cache is never worth a failed request.
       log?.info?.("CLAUDE-CLI", `session cache unavailable (${e.message}); running without it`);
@@ -1193,6 +1293,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
     const ctx = createClaudeCliContext({
       toolNames: toolNameMap(invocation.manifest),
       tokenCeiling: Boolean(tokenCeiling),
+      structured: Boolean(jsonSchema),
       id: `chatcmpl-${Date.now().toString(36)}`,
       created: Math.floor(Date.now() / 1000),
       model,
@@ -1535,7 +1636,9 @@ export class ClaudeCliExecutor extends BaseExecutor {
             if (closed || spawnFailed) return;
             if (!sawResult) {
               // stderr can carry config dumps and credential paths — log it, don't ship it.
-              if (stderrTail.trim()) log?.info?.("CLAUDE-CLI", `stderr: ${stderrTail.trim()}`);
+              // Quoted, so text the CLI echoed from the request — a schema's own
+              // keywords, say — cannot forge a line or carry escape codes into the log.
+              if (stderrTail.trim()) log?.info?.("CLAUDE-CLI", `stderr: ${JSON.stringify(stderrTail.trim())}`);
               fail(`Claude CLI exited with code ${code} before completing`, "exited_early");
               return;
             }

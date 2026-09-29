@@ -28,7 +28,7 @@ node scripts/fork/upgrade-fork.mjs              # take the newest upstream tag
 
 This matters more than any script: **most of the fork is new files, and new files never conflict.**
 
-- **54 added files** — providers, executors, configs, components, API routes, agent-skill
+- **55 added files** — providers, executors, configs, components, API routes, agent-skill
   storage and injection, local-provider accounts, the bridge's Docker image and its sign-in
   console proxy, the API Key Usage page and its data layer, tests, this tooling.
   Upstream does not know they exist, so an upgrade cannot break them. They only need to still be
