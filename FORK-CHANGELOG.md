@@ -8,6 +8,17 @@ See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
 ## Unreleased (on top of v0.5.91)
 
+### Features
+
+#### Claude Code CLI 2.1.284, and a Jenkins job
+
+The image's `CLAUDE_CODE_VERSION` moves from 2.1.281 to 2.1.284 (npm `latest`; the
+`stable` tag is 2.1.277). `Jenkinsfile` builds and pushes through the shared
+library with `deployToK8s: false`; the Kubernetes-Application tag stays manual.
+Not changed: `CLAUDE_CLI_VERSION` in `open-sse/providers/shared.js` (the plain
+`claude` provider's user-agent) is still 2.1.281, and the `claude-cli` code cites
+behaviour measured on 2.1.281 — neither re-checked against 2.1.284.
+
 ### Fixes
 
 #### Scheduled keepalives no longer silently skip a slot

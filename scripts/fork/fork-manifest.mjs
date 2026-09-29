@@ -35,6 +35,8 @@ export const ADDED_FILES = [
   // what the accounts card says about the last scheduled keepalive
   "src/shared/utils/keepaliveStatus.js",
   "tests/unit/keepalive-status.test.js",
+  // Jenkins: build + push through the shared library (no deploy step)
+  "Jenkinsfile",
   // shared
   "open-sse/utils/concurrencyGate.js",
   // agent skills — third-party SKILL.md injected into routed requests
