@@ -75,6 +75,12 @@ docker push $H/9router:$TAG
 # then bump the router tag in deployment.yaml and let ArgoCD sync
 ```
 
+Jenkins does the build and push (`Jenkinsfile`, via the shared library's
+`buildAndDeployApp`, `deployToK8s: false`); the tag in Kubernetes-Application is
+changed by hand. Its tags are `<YYYYMMDD>_<build>`, so nothing in the tag says which
+Claude Code is inside — that is the Dockerfile's `ARG CLAUDE_CODE_VERSION`.
+The library cannot pass build-args, so moving the CLI means editing that default.
+
 If the build dies with `heap out of memory` or `Killed`, the builder's heap is
 the problem, not the code: add `--build-arg NODE_BUILD_HEAP_MB=8192`, and make
 sure the host actually has that much free.

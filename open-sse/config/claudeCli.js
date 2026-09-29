@@ -37,6 +37,58 @@ export function resolveClaudeCliMaxTurns(value) {
   return turns;
 }
 
+// `response_format` reaches the CLI as `--json-schema`. The CLI then answers
+// through a tool of its own, by this name, whose input is the validated answer;
+// it is the CLI's channel back to us, not a call for the client to run.
+// Measured on 2.1.285 under `--max-turns 1 --tools ""`.
+export const CLAUDE_CLI_STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
+
+// The schema is one argv element, and Windows caps a whole command line at
+// 32,767 characters. Every `"` on that line is escaped to `\"`, so a schema can
+// double in length on the way; the limit is set so even that leaves room for the
+// rest of the line (flags, three file paths, the model — the system prompt goes
+// through a file). A larger schema is refused with a reason rather than left to
+// fail the spawn, which would answer 503 and lock the account.
+export const CLAUDE_CLI_MAX_JSON_SCHEMA_CHARS = 12000;
+
+// The CLI compiles the caller's schema with Ajv and validates the answer against
+// it synchronously, inside the child, which blocks the child until it finishes
+// (only the idle timeout ends it). A schema can be small and still expensive:
+// a chain of allOf entries with two `$ref`s each doubles the work per level —
+// measured with ajv 8.20, 72 ms at depth 24 and 301 ms at 26, about 80 minutes
+// by depth 40 from 2.6 KB. Bounding the number of references bounds that: with
+// at most 32, even a fan-out built to blow up (three per level) stays near 10^5
+// evaluations per value validated (a `$ref` under `items` repeats that for each
+// element the model writes). Values, nodes and depth bound the walk itself,
+// which is iterative. Every value is counted, plain numbers included, and each
+// takes at least a character and a separator — so a schema inside the character
+// limit can never hold more than half that many values, and the walk costs what
+// the limit allows rather than what the request carried.
+//
+// Not bounded here: a `pattern` that backtracks catastrophically against what the
+// model writes. It cannot be told apart from an ordinary pattern without a regex
+// analyser, and banning `pattern` would refuse far too many real schemas. The
+// idle timeout is what ends a child stuck on one.
+export const CLAUDE_CLI_JSON_SCHEMA_LIMITS = Object.freeze({
+  maxNodes: 2000,
+  maxDepth: 32,
+  maxRefs: 32,
+  maxValues: Math.floor(CLAUDE_CLI_MAX_JSON_SCHEMA_CHARS / 2),
+});
+
+// How a structured turn ends when the CLI could not get valid output out of the
+// model: its own retries ran out (`error_max_structured_output_retries`, present
+// in 2.1.285), or — with no tools on offer — the turn budget did
+// (`error_max_turns`). Both are about this request's schema and prompt, not the
+// account. A 502 here would lock the model on that account for 30 seconds and
+// fail over to one that fails the same way; a 4xx other than 401/402/403/429 is
+// handed back for this request alone (accountFallback.js).
+export const CLAUDE_CLI_STRUCTURED_FAILURE_SUBTYPES = [
+  "error_max_structured_output_retries",
+  "error_max_turns",
+];
+export const CLAUDE_CLI_STRUCTURED_FAILURE_STATUS = 422;
+
 // The child gets an allowlist, not a copy of the server environment: process.env
 // here holds JWT_SECRET, API_KEY_SECRET, MACHINE_ID_SALT and every provider key.
 // ANTHROPIC_* is deliberately excluded — the CLI must use its own stored login,
