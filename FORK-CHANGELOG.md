@@ -10,16 +10,86 @@ See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
 ### Features
 
-#### Claude Code CLI 2.1.284, and a Jenkins job
+#### Claude Code CLI 2.1.285, and a Jenkins job
 
-The image's `CLAUDE_CODE_VERSION` moves from 2.1.281 to 2.1.284 (npm `latest`; the
-`stable` tag is 2.1.277). `Jenkinsfile` builds and pushes through the shared
+The image's `CLAUDE_CODE_VERSION` moves from 2.1.281 to 2.1.285 (npm `latest`; the
+`stable` tag is 2.1.280). `Jenkinsfile` builds and pushes through the shared
 library with `deployToK8s: false`; the Kubernetes-Application tag stays manual.
 Not changed: `CLAUDE_CLI_VERSION` in `open-sse/providers/shared.js` (the plain
 `claude` provider's user-agent) is still 2.1.281, and the `claude-cli` code cites
-behaviour measured on 2.1.281 — neither re-checked against 2.1.284.
+behaviour measured on 2.1.281 — neither re-checked against 2.1.285, except
+`--json-schema` (see Fixes).
 
 ### Fixes
+
+#### `response_format` works on the Claude Code CLI provider
+
+`response_format: json_object` / `json_schema` was refused with a 400
+(`unsupported_response_format`, "Claude Code CLI cannot guarantee a JSON
+response") on the premise that the CLI has no structured-output mode. It has one:
+`claude -p --json-schema <schema>`. Before the refusal existed (5e07d2fd) the
+field was dropped without a word, so a JSON reply was the model's good manners,
+not a guarantee; since then every such request failed, and a combo that fell
+through to this provider failed on it.
+
+Measured on 2.1.285, under the flags this provider always passes (`--max-turns 1
+--tools ""`, and again over `stream-json` with and without replayed history): the
+answer does not arrive as text. The model calls an internal `StructuredOutput`
+tool, the turn ends on `stop_reason: "tool_use"` with `is_error: false`, and the
+`result` event carries the validated JSON as `structured_output`.
+
+- `json_schema` → `--json-schema <the bare schema>` (OpenAI wraps it in
+  `json_schema.schema`; the CLI takes it unwrapped). `json_object` → `{"type":
+  "object"}`.
+- The stream translator leaves that internal tool call out — it is not a call for
+  the client to run — drops prose around it, and delivers `structured_output` as
+  the message content, finishing with `stop` rather than `tool_calls`. Delivered
+  from the result, not streamed, because the CLI validates it there: streamed
+  fragments could be JSON the CLI then refuses. So a structured answer arrives
+  whole rather than token by token.
+- No fallback to prose, and none to unvalidated JSON: only `structured_output` has
+  been through the CLI's validation, so a structured turn without it (the CLI gave
+  up, the model never called the tool, or `max_tokens` cut it short) is an error
+  (`structured_output_missing`) even if the result text happens to parse.
+- A delivered answer always finishes `stop`, including when the CLI flagged the
+  turn for a token ceiling (`length` would make openai-python's `parse()` reject a
+  correct answer).
+- A structured failure is the request's, not the account's, so it carries
+  **HTTP 422**: `structured_output_missing`, `error_max_structured_output_retries`
+  and (no tools are on offer) `error_max_turns`. A non-streaming client reads the
+  status off the error frame, and without one it is a 502 — which the account loop
+  answers by locking the model on that account for 30 seconds and failing over.
+  Other failures keep the status they had.
+- The CLI retries validation itself inside the one turn: a schema pinning `answer`
+  to 5 for "2+2" came back `{"answer":5}` after a retry. `$schema: draft-07` (what
+  zod-to-json-schema emits) passes through.
+- Still refused, with a reason: a schema whose top level is not an object (the CLI
+  answers through a tool, and a tool's input is an object); a schema over 12,000
+  characters (one argv element; Windows escapes every `"` to `\"`, so it can
+  double, against a 32,767-character command line); a schema with more than 2,000
+  objects/arrays, JSON nested deeper than 32 levels (about 15 levels of nested
+  objects), more than 6,000 values in all, or more than 32 `$ref`s (counted
+  wherever they sit, so none hide under `dependencies` or another map); and
+  `response_format` together with tools the request would advertise — how the two
+  compete for the one turn was not measured. `tool_choice: "none"` or no tools is
+  fine.
+- Why the complexity limits: the CLI compiles the schema with Ajv and validates
+  synchronously in the child, so a small schema can be expensive — a chain of
+  `allOf` entries with two `$ref`s each doubles per level (ajv 8.20: 72 ms at depth
+  24, 301 ms at 26, about 80 minutes by 40, from 2.6 KB). The walk that checks the
+  limits is iterative, counts every value (plain numbers too), and runs before
+  anything serializes the schema: a schema nested tens of thousands of levels deep
+  would otherwise make `JSON.stringify` throw out of `execute()` — a 502 and the
+  same lock — and a 10 MB array of ones cost 555 MB of heap and 700 ms to walk
+  (now 0.2 MB and under a millisecond; it is refused as too many values). **Not
+  bounded:** a `pattern` that backtracks catastrophically against what the model
+  writes cannot be told from an ordinary one without a regex analyser; the 180 s
+  idle timeout ends a child stuck on one.
+- Structured turns skip the session cache: the CLI files that turn's transcript
+  with its own `StructuredOutput` call in it, which is not what the client's
+  history says happened. The log says so when the cache is on.
+- The CLI's stderr is logged quoted, so text it echoes from a request (a schema's
+  keywords) cannot forge log lines.
 
 #### Scheduled keepalives no longer silently skip a slot
 
