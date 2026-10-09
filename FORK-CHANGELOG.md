@@ -6,21 +6,99 @@ Kept out of the upstream `CHANGELOG.md` on purpose: upstream rewrites the top of
 that file on every release, so an entry there would conflict on 100% of upgrades.
 See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
-## Unreleased (on top of v0.5.95)
+## Unreleased (on top of v0.5.99)
 
 ### Features
 
-#### Claude Code CLI 2.1.285, and a Jenkins job
+#### Claude Code CLI 2.1.295, and a Jenkins job
 
-The image's `CLAUDE_CODE_VERSION` moves from 2.1.281 to 2.1.285 (npm `latest`; the
-`stable` tag is 2.1.280). `Jenkinsfile` builds and pushes through the shared
+The image's `CLAUDE_CODE_VERSION` moves from 2.1.281 to 2.1.295 (npm `latest`; the
+`stable` tag is 2.1.286). `Jenkinsfile` builds and pushes through the shared
 library with `deployToK8s: false`; the Kubernetes-Application tag stays manual.
 Not changed: `CLAUDE_CLI_VERSION` in `open-sse/providers/shared.js` (the plain
 `claude` provider's user-agent) is still 2.1.281, and the `claude-cli` code cites
-behaviour measured on 2.1.281 — neither re-checked against 2.1.285, except
-`--json-schema` (see Fixes).
+behaviour measured on 2.1.281 — neither re-checked against 2.1.295, except
+`--json-schema` and the rate-limit events (see Fixes), which were read from, and run
+against, the 2.1.295 binary.
 
 ### Fixes
+
+#### A Claude Code CLI provider that is switched off is skipped in a combo
+
+A no-auth provider has no credential to be missing, so `getProviderCredentials`
+stood in a synthetic "Public" connection whenever it found no *active* connection.
+claude-cli's accounts are real rows, so switching every one of them off left zero
+active rows, which read as "no accounts at all" — and the stand-in answered, so a
+combo kept sending to a provider the operator had turned off while every other
+provider was skipped. The stand-in is now used only when the provider has no
+connection rows at all; rows that are all off mean the provider is off (no
+credentials, so the combo moves on). An account added but not yet logged in
+(inactive, `testStatus: pending`) was never switched on and does not count as off.
+
+#### An account that is out of quota is not asked again, and the combo moves on
+
+The CLI reports a spent subscription as ordinary content ("You've hit your limit"),
+so the router saw a 200 and kept sending to it — and, at best, a 502 that locked the
+model for 30 seconds before the next attempt. The CLI does say so in a form that can
+be read (from the 2.1.295 binary): a `rate_limit_event` whose `rate_limit_info.status`
+is `rejected` (with `resetsAt` and the `rateLimitType` of the window), and a line it
+composes itself ("You've hit your …", "You're out of usage credits", "Your org is out
+of usage") as a synthetic assistant message and in an error result.
+
+- Either is read as "out of quota". The account is blocked until the reset the CLI
+  gave, or for `CLAUDE_CLI_QUOTA_RETRY_MS` (10 minutes) when it gave none, which is
+  how often it is tried again. Per account (config directory or token digest), in
+  memory; a block never shortens a longer one.
+- While blocked, nothing is spawned: the request is answered **429** with the reset
+  time at once. `parseError` hands the reset to `markAccountUnavailable`, which locks
+  the model on that account until then (capped at 30 minutes, so the account is
+  probed again at least that often — a probe of a rejected account is instant and
+  costs no model call), and the combo goes on to its next model.
+- The request that finds out is answered 429 too, not as a stream carrying the limit
+  message: the response is held back until the CLI has said enough to tell — its
+  rate-limit report at the start of the turn ("allowed"), else the first content or
+  the result — and at most `CLAUDE_CLI_QUOTA_PROBE_WAIT_MS` (10 s). Past that a 200
+  goes out, and a limit found later only blocks the requests that follow.
+- Only the CLI's own message counts: the line must start the text and be short (an
+  error result can carry the model's own answer — a `max_tokens` cut comes back
+  `is_error` — which may say "you've reached your goal"); a model describing limits
+  in its own words, an `allowed_warning`, a plain API 429/529, and a window that
+  paid extra usage is covering (`isUsingOverage` / `overageStatus` allowed) do not
+  block the account.
+- A model-scoped window (`seven_day_opus`, `seven_day_sonnet`) blocks only that model
+  family on the account; `five_hour` / `seven_day` block all of it. The block is in
+  memory (a restart clears it) and is not shown in the dashboard.
+- **Not observed:** an account actually being spent. The events above are read from
+  the binary's schema and exercised with a stand-in CLI, not captured from a real
+  exhausted subscription.
+
+#### `-low` in a Codex model id is the effort, and wins over the client's
+
+`cx/gpt-6-luna-low` strips `-low` from the model and uses it as `reasoning.effort` —
+but only when the client sent no effort. Agent clients always send one, so the
+suffix was thrown away and the model ran at the client's default (medium).
+The `(low)` spelling already won over the client (thinkingUnified); the dash
+spelling now does too: effort in the model id > `reasoning.effort` >
+`reasoning_effort` > default. The dash form takes none/minimal/low/medium/high/xhigh;
+`max` is written `(max)`.
+
+#### Effort can be set per model
+
+The provider-level "Thinking" selector is one value for all of a provider's models,
+and only fills in an effort the client did not send. Each model on the provider's
+page now has an **Effort** selector (the levels that model takes, from
+`getThinkingLevels`), stored as `providerThinking[provider].models[modelId]` next to
+the provider-wide `mode` (saving one no longer drops the other). It is the
+operator's choice for that model, so it is applied **over** the client's effort
+(`open-sse/services/modelEffort.js`); an effort written into the request's model id
+still wins over it. A level the model does not take is ignored rather than sent. It
+is written where the client's format reads it: `reasoning_effort` /
+`reasoning.effort` for OpenAI-shaped bodies, `output_config.effort` for Claude-shaped
+ones; Gemini-shaped bodies are left alone (a thinking budget, not a named effort).
+The selector is not shown for the Claude Code CLI provider, which has no effort to set.
+The provider-wide "Thinking" mode is unchanged and still only fills a gap — and it
+still writes `reasoning_effort` whatever the client's format, which a native Claude
+passthrough sends upstream as-is.
 
 #### `response_format` works on the Claude Code CLI provider
 

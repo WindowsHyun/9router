@@ -67,6 +67,8 @@ export default function ProviderDetailPage() {
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
+  // model id -> the effort that model runs at (see open-sse/services/modelEffort.js)
+  const [modelEfforts, setModelEfforts] = useState({});
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {}, cron: {} });
   const [cronScheduleTarget, setCronScheduleTarget] = useState(null);
   const [suggestedModels, setSuggestedModels] = useState([]);
@@ -361,6 +363,7 @@ export default function ProviderDetailPage() {
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
+      setModelEfforts(thinkingCfg.models && typeof thinkingCfg.models === "object" ? thinkingCfg.models : {});
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? settingsData[autoPingSettingsKey] || {} : {};
       setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {}, cron: apCfg.cron || {} });
@@ -450,16 +453,23 @@ export default function ProviderDetailPage() {
     saveProviderStrategy("round-robin", value);
   };
 
-  const saveThinkingConfig = async (mode) => {
+  // `mode` is the provider-wide default, `models` the per-model efforts. Either
+  // can be saved without losing the other; the entry goes away when both are empty.
+  const saveThinkingConfig = async (mode, models = modelEfforts) => {
     try {
       const settingsRes = await fetch("/api/settings", { cache: "no-store" });
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
       const current = settingsData.providerThinking || {};
       const updated = { ...current };
-      if (!mode || mode === "auto") {
+      const hasMode = mode && mode !== "auto";
+      const cleanModels = Object.fromEntries(Object.entries(models || {}).filter(([, level]) => level && level !== "auto"));
+      if (!hasMode && Object.keys(cleanModels).length === 0) {
         delete updated[providerId];
       } else {
-        updated[providerId] = { mode };
+        updated[providerId] = {
+          ...(hasMode ? { mode } : {}),
+          ...(Object.keys(cleanModels).length ? { models: cleanModels } : {}),
+        };
       }
       await fetch("/api/settings", {
         method: "PATCH",
@@ -474,6 +484,22 @@ export default function ProviderDetailPage() {
   const handleThinkingModeChange = (mode) => {
     setThinkingMode(mode);
     saveThinkingConfig(mode);
+  };
+
+  const handleModelEffortChange = (modelId, level) => {
+    const next = { ...modelEfforts };
+    if (!level || level === "auto") delete next[modelId]; else next[modelId] = level;
+    setModelEfforts(next);
+    saveThinkingConfig(thinkingMode, next);
+  };
+  // The levels this model takes, without "none" (that is the thinking switch, not an effort).
+  const effortLevelsFor = (modelId) => {
+    // The Claude Code CLI has no effort of its own to set; offering one would be a
+    // selector that does nothing.
+    if (providerId === "claude-cli") return null;
+    const levels = getThinkingLevels(providerId, modelId);
+    const efforts = levels ? levels.filter((l) => l !== "none") : [];
+    return efforts.length ? efforts : null;
   };
 
   const saveAutoPing = async (next) => {
@@ -1325,6 +1351,9 @@ export default function ProviderDetailPage() {
             isFree={false}
             caps={getCaps(`${providerId}/${model.id}`)}
             thinkingSuffix={resolveThinkingSuffix(model.id)}
+            effortLevels={effortLevelsFor(model.id)}
+            effort={modelEfforts[model.id]}
+            onEffortChange={(level) => handleModelEffortChange(model.id, level)}
           />
         ))}
 
@@ -1351,6 +1380,9 @@ export default function ProviderDetailPage() {
               onDisable={() => handleDisableModel(model.id)}
               caps={getCaps(`${providerId}/${model.id}`)}
               thinkingSuffix={resolveThinkingSuffix(model.id)}
+              effortLevels={effortLevelsFor(model.id)}
+              effort={modelEfforts[model.id]}
+              onEffortChange={(level) => handleModelEffortChange(model.id, level)}
             />
           );
         })}

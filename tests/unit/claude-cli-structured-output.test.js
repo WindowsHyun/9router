@@ -323,3 +323,19 @@ describe("the flag reaches the CLI", () => {
     expect(args[args.indexOf("--tools") + 1]).toBe("");
   });
 });
+
+describe("a failed turn the CLI says was rate limited (api_error_status 429)", () => {
+  // Whatever the CLI's wording, a 429 it reports should reach the account loop as a
+  // 429 (exponential backoff), not as an unmarked failure (a 502: retried every 30 s).
+  const ctx = () => createClaudeCliContext({ id: "chatcmpl-x", created: 1, model: "m" });
+
+  it("carries status 429 on the error frame", () => {
+    const { out } = run([{ type: "result", subtype: "success", is_error: true, api_error_status: 429, num_turns: 1, result: "Request rejected (429)" }], ctx());
+    expect(out.find((e) => e.error)?.error.status).toBe(429);
+  });
+
+  it("leaves other upstream failures as they were", () => {
+    const { out } = run([{ type: "result", subtype: "success", is_error: true, api_error_status: 529, num_turns: 1, result: "Overloaded" }], ctx());
+    expect(out.find((e) => e.error)?.error.status).toBeUndefined();
+  });
+});

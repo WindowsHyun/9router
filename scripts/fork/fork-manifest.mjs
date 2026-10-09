@@ -21,6 +21,8 @@ export const FORK_BRANCH = "master";
  * they only need to still be present after an upgrade.
  */
 export const ADDED_FILES = [
+  // per-model reasoning effort (applied over the client's; see FORK-CHANGELOG)
+  "open-sse/services/modelEffort.js",
   // claude-cli provider
   "open-sse/config/claudeCli.js",
   "open-sse/executors/claude-cli.js",
@@ -220,13 +222,18 @@ export const PATCHED_FILES = [
   },
   {
     path: "open-sse/handlers/chatCore.js",
-    markers: ["injectAgentSkills", "agentSkills"],
+    markers: ["injectAgentSkills", "agentSkills", "applyModelEffort"],
     hint: "Takes `agentSkills` in the options object and injects them after the caveman/ponytail block, just before dispatch. Deliberately NOT gated on tokenSaverEnabled: a skill changes how the model answers and costs tokens rather than saving them.",
   },
   {
     path: "src/sse/handlers/chat.js",
     markers: ["getEnabledAgentSkills"],
-    hint: "Loads the enabled skills per request (a local SQLite read, not a network fetch) and passes them to handleChatCore. The .catch(() => []) is deliberate — a skill must never be the reason a completion fails.",
+    hint: "Loads the enabled skills per request (a local SQLite read, not a network fetch) and passes them to handleChatCore. loadAgentSkills() is a try/catch on purpose — a skill must never be the reason a completion fails, and a storage module without the function (an upstream test's mock) throws before a .catch could see it.",
+  },
+  {
+    path: "open-sse/executors/codex.js",
+    markers: ["effort named in the model id"],
+    hint: "An effort written into the model id (`gpt-6-luna-low`) wins over the client's reasoning / reasoning_effort, like the `(low)` spelling does. Upstream only used the suffix when the client sent no effort, which an agent client never does.",
   },
   {
     path: "src/app/(dashboard)/dashboard/skills/page.js",
@@ -304,6 +311,13 @@ export const FORK_TESTS = [
   "unit/api-key-usage-series.test.js",
   "unit/api-key-usage-csv.test.js",
   "unit/usage-stats-no-raw-keys.test.js",
+  "unit/claude-cli-disabled-provider.test.js",
+  "unit/claude-cli-quota-exhausted.test.js",
+  "unit/codex-effort-suffix.test.js",
+  "unit/model-effort.test.js",
+  "unit/model-effort-ui.test.js",
+  "unit/model-effort-save-apply.test.js",
+  "unit/claude-cli-combo-e2e.test.js",
 ];
 
 /** Live tests; skipped unless REAL_CLI_TESTS=1 and Claude Code is installed. */

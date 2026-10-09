@@ -127,6 +127,12 @@ async function runHeavyStartup() {
     .then(({ repairClaudeCliAccountsOnce }) => repairClaudeCliAccountsOnce())
     .catch((e) => console.log("[claude-cli] account repair skipped:", e.message));
 
+  // Seed a claude-cli account from env vars (CLAUDE_CLI_OAUTH_TOKEN) so the
+  // credential can live in Infisical / a K8s Secret instead of in the dashboard.
+  import("@/shared/services/claudeCliInfisicalSeed")
+    .then(({ seedClaudeCliFromEnv }) => seedClaudeCliFromEnv())
+    .catch((e) => console.log("[claude-cli] env credential seed skipped:", e.message));
+
   // Proactive OAuth token refresh (e.g. grok-cli ~6h TTL). Module is idempotent
   // and also started from custom-server.js when that entry is used.
   import("@/sse/services/backgroundTokenRefresh.js")

@@ -37,6 +37,18 @@ export function resolveClaudeCliMaxTurns(value) {
   return turns;
 }
 
+// An account that reports it is out of quota is not asked again until its reset
+// — or, when the CLI gave none, until this long has passed, which is how often it
+// is tried again. A rejected subscription answers instantly and costs no model
+// call, so a probe this often is cheap.
+export const CLAUDE_CLI_QUOTA_RETRY_MS = 10 * 60 * 1000;
+
+// How long a freshly spawned request is held back, before its response is
+// handed on, to learn whether the CLI is about to say it is out of quota. That
+// is said at the very start of a turn; past this the request is answered as a
+// stream, and a limit found later only blocks the requests that follow.
+export const CLAUDE_CLI_QUOTA_PROBE_WAIT_MS = 10000;
+
 // `response_format` reaches the CLI as `--json-schema`. The CLI then answers
 // through a tool of its own, by this name, whose input is the validated answer;
 // it is the CLI's channel back to us, not a call for the client to run.
