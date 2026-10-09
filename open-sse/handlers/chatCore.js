@@ -5,10 +5,12 @@ import { FORMATS } from "../translator/formats.js";
 import { normalizeClaudePassthrough, anchorClaudeCache } from "../translator/formats/claude.js";
 import { createStreamController } from "../utils/streamHandler.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
+import { applyModelEffort } from "../services/modelEffort.js";
 import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
+import { guardStreamHead } from "../utils/upstreamBodyError.js";
 import { upstreamResponseHeaders } from "../utils/upstreamHeaders.js";
 import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
@@ -126,6 +128,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       body = { ...body, reasoning_effort: mode };
     }
   }
+
+  // Per-model effort: the operator's choice for this model, applied over the client's
+  // (the provider-level mode above only fills a gap). An effort written into the
+  // model id still wins over it, later, in the executor / thinkingUnified.
+  body = applyModelEffort(body, provider, model, providerThinking, sourceFormat);
 
   const upstreamModel = getModelUpstreamId(alias, model, body);
 
@@ -539,7 +546,26 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return result;
   }
 
-  // Streaming response
+  // Streaming response. An upstream that opens its 200 with a failure frame
+  // (`data: {"error": …}`, `event: error`) has not answered: surface it as the
+  // status it stands for, before a byte reaches the client, so the account loop
+  // and the combo can move on instead of streaming the error as the reply.
+  const upstreamType = (providerResponse.headers.get("content-type") || "").toLowerCase();
+  if (!upstreamType || upstreamType.includes("event-stream") || upstreamType.includes("json")) {
+    const guarded = await guardStreamHead(providerResponse);
+    if (guarded.error) {
+      const { status: failedStatus, message: failedMessage } = guarded.error;
+      trackPendingRequest(model, provider, connectionId, false, true);
+      appendRequestLog({ model, provider, connectionId, status: `FAILED ${failedStatus}` }).catch(() => { });
+      const errMsg = formatProviderError(new Error(failedMessage), provider, model, failedStatus);
+      if (log?.errorLine) log.errorLine(reqTag, "✗", `ERROR ${failedStatus} · ${provider}/${model} · error as first stream frame\n    ${errMsg}`);
+      reqLogger.logError(new Error(failedMessage), finalBody || translatedBody);
+      streamController.handleComplete();
+      return createErrorResult(failedStatus, errMsg);
+    }
+    providerResponse = guarded.response;
+  }
+
   const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
   return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, credentials });
 }

@@ -51,6 +51,7 @@ import {
   CLAUDE_CLI_IDLE_TIMEOUT_MS,
   CLAUDE_CLI_MCP_TOOL_PREFIX,
   CLAUDE_CLI_MODEL_PATTERN,
+  CLAUDE_CLI_QUOTA_PROBE_WAIT_MS,
   CLAUDE_CLI_STRUCTURED_FAILURE_STATUS,
   CLAUDE_CLI_STRUCTURED_FAILURE_SUBTYPES,
   CLAUDE_CLI_STRUCTURED_OUTPUT_TOOL,
@@ -74,7 +75,10 @@ import {
   toMcpManifest,
 } from "./claudeCliTools.js";
 import { buildReplayFrames, describeFrames, framesToStdin, transcriptSeed, transcriptRecords } from "./claudeCliReplay.js";
-import { recordRateLimitEvent, rateLimitAccountKey, recordCacheUsage } from "./claudeCliRateLimits.js";
+import {
+  recordRateLimitEvent, rateLimitAccountKey, recordCacheUsage,
+  quotaExhaustion, markQuotaExhausted, quotaBlockedUntil,
+} from "./claudeCliRateLimits.js";
 import {
   sessionCacheEnabled,
   sharedSessionRegistry,
@@ -754,9 +758,13 @@ export function translateClaudeCliEvent(event, ctx) {
       // A structured turn the CLI could not get valid output from failed on this
       // request's own schema and prompt, not on the account — see
       // CLAUDE_CLI_STRUCTURED_FAILURE_STATUS for what a 502 would have cost.
+      // A failure the CLI itself reports as a 429 stays a 429 whatever its wording:
+      // the account loop backs off exponentially on that, where an unmarked failure
+      // is a 502 and is retried every 30 seconds. (The out-of-quota wording that is
+      // recognised is handled before this, with its reset; this is the net under it.)
       const status = ctx.structured && CLAUDE_CLI_STRUCTURED_FAILURE_SUBTYPES.includes(event.subtype)
         ? CLAUDE_CLI_STRUCTURED_FAILURE_STATUS
-        : undefined;
+        : (event.api_error_status === 429 ? 429 : undefined);
       frames.push(...errorFrames(ctx, message, code, status));
       return { frames, finished: true };
     }
@@ -1059,9 +1067,25 @@ async function planClaudeCliSession({ invocation, messages, model, account, log 
   return session;
 }
 
-function errorResponse(message, code, status = 503) {
-  const body = sseChunk({ error: { message, type: "claude_cli_error", code } }) + SSE_DONE;
+function errorResponse(message, code, status = 503, extra = null) {
+  const body = sseChunk({ error: { message, type: "claude_cli_error", code, ...(extra || {}) } }) + SSE_DONE;
   return new Response(body, { status, headers: SSE_HEADERS });
+}
+
+/**
+ * What a client is told when the account is out of quota. A 429 with the reset
+ * time: chatCore reads the time through parseError below, markAccountUnavailable
+ * locks the model on that account until then, and a combo goes on to its next
+ * model — which a 200 carrying the CLI's own "You've hit your limit" line never
+ * made it do.
+ */
+function quotaExhaustedResponse(untilMs) {
+  return errorResponse(
+    `Claude Code CLI account is out of quota; it is not asked again until ${new Date(untilMs).toISOString()}`,
+    "quota_exhausted",
+    429,
+    { resetsAtMs: untilMs },
+  );
 }
 
 // ─── ClaudeCliExecutor ───────────────────────────────────────────────────────
@@ -1083,6 +1107,16 @@ export class ClaudeCliExecutor extends BaseExecutor {
     return null;
   }
 
+  /** The reset time of a quota_exhausted response, for the account lock. */
+  parseError(response, bodyText) {
+    const frame = String(bodyText || "").split("\n").find((line) => line.startsWith("data: {"));
+    if (!frame) return null;
+    let error;
+    try { error = JSON.parse(frame.slice(6)).error; } catch { return null; }
+    if (error?.code !== "quota_exhausted") return null;
+    return { status: response.status, message: error.message, resetsAtMs: error.resetsAtMs };
+  }
+
   async execute({ model, body, credentials, signal, log }) {
     const b = body ?? {};
     const messages = Array.isArray(b.messages) ? b.messages : Array.isArray(b.input) ? b.input : [];
@@ -1091,6 +1125,11 @@ export class ClaudeCliExecutor extends BaseExecutor {
     if (!resolveClaudeCliModel(model)) {
       return { response: errorResponse(`Unsupported model id for the Claude Code CLI: ${model}`, "invalid_model", 400) };
     }
+
+    // An account that has said it is out of quota is not asked again until its
+    // reset: nothing is spawned, and the 429 sends a combo on to its next model.
+    const blockedUntil = quotaBlockedUntil(credentials?.providerSpecificData, model);
+    if (blockedUntil) return { response: quotaExhaustedResponse(blockedUntil) };
 
     // Refused before anything is spawned: these change the shape of the answer
     // the caller promised someone else, and the CLI cannot give them. Answering
@@ -1364,6 +1403,10 @@ export class ClaudeCliExecutor extends BaseExecutor {
     };
 
     let streamTeardown = null;
+    // Settled with the quota verdict as soon as the CLI has said enough to tell
+    // whether it is out (see the wait before the response is returned).
+    let settleQuotaGate;
+    const quotaGate = new Promise((resolve) => { settleQuotaGate = resolve; });
     const sseStream = new ReadableStream({
       // Runs at construction, before anything reads the body — so the child is
       // always wired up and always reaped, even if the response is discarded.
@@ -1401,6 +1444,7 @@ export class ClaudeCliExecutor extends BaseExecutor {
           try { controller.enqueue(encoder.encode(frame)); } catch { closed = true; }
         };
         const finish = () => {
+          settleQuotaGate(null);
           if (closed) return;
           closed = true;
           try { controller.enqueue(encoder.encode(SSE_DONE)); } catch { /* already torn down */ }
@@ -1511,6 +1555,21 @@ export class ClaudeCliExecutor extends BaseExecutor {
             // place they appear at all.
             if (event.type === "rate_limit_event") {
               recordRateLimitEvent(credentials?.providerSpecificData, event.rate_limit_info);
+            }
+            // The account is out of quota. Remembered so nothing more is sent to it
+            // until its reset, and — while the response has not been handed on —
+            // turned into a 429 (see below). Content already on its way is left.
+            const outOfQuota = quotaExhaustion(event);
+            if (outOfQuota) {
+              const until = markQuotaExhausted(credentials?.providerSpecificData, outOfQuota.resetsAtMs, outOfQuota.scope);
+              log?.info?.("CLAUDE-CLI", `account out of quota, blocked until ${new Date(until).toISOString()}`);
+              settleQuotaGate({ until });
+            } else if (event.type === "result" || event.type === "assistant"
+              // The CLI reports its windows at the start of a turn: "allowed" means it
+              // is going ahead, which is the verdict — no need to wait for the model.
+              || (event.type === "rate_limit_event" && event.rate_limit_info?.status !== "rejected")
+              || (event.type === "stream_event" && event.event?.type?.startsWith("content_block"))) {
+              settleQuotaGate(null);
             }
             // A resume of a session that is not there. The CLI says so before any
             // model call; nothing has reached the client, so the request can
@@ -1699,6 +1758,19 @@ export class ClaudeCliExecutor extends BaseExecutor {
         if (streamTeardown) streamTeardown();
       },
     });
+
+    // Hold the response back until the CLI has said whether it is out of quota,
+    // so that the request which finds out is answered 429 rather than as a
+    // stream carrying the limit message. Said at the very start of a turn, so the
+    // wait is short; it is capped so a slow start never holds the response.
+    const quotaTimer = setTimeout(() => settleQuotaGate(null), CLAUDE_CLI_QUOTA_PROBE_WAIT_MS);
+    if (quotaTimer.unref) quotaTimer.unref();
+    const quotaVerdict = await quotaGate;
+    clearTimeout(quotaTimer);
+    if (quotaVerdict) {
+      if (streamTeardown) streamTeardown();
+      return { response: quotaExhaustedResponse(quotaVerdict.until) };
+    }
 
     return {
       response: new Response(sseStream, { status: 200, headers: SSE_HEADERS }),

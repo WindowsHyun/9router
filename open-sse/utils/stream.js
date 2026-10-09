@@ -8,6 +8,8 @@ import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE, ensureStream
 import { restoreToolNames } from "./opencodeFingerprint.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
+import { buildErrorBody } from "./error.js";
+import { bodyErrorFromJson } from "./upstreamBodyError.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
@@ -315,6 +317,18 @@ export function createSSEStream(options = {}) {
                 output = `data: ${JSON.stringify(parsed)}\n`;
                 injectedUsage = true;
               }
+
+              // A failure that reaches the client mid-stream (too late to fail over)
+              // goes out in the standard `{error:{message,type,code}}` shape. Some
+              // gateways send a bare string (`{"error":"…"}`), which OpenAI clients
+              // cannot read a message from.
+              if (typeof parsed.error === "string") {
+                const failure = bodyErrorFromJson(parsed);
+                if (failure) {
+                  output = `data: ${JSON.stringify(buildErrorBody(failure.status, failure.message))}\n`;
+                  injectedUsage = true;
+                }
+              }
             } catch {
               // Skip non-JSON data lines silently — don't forward garbage to clients.
               // Upstream providers sometimes return plain-text errors (HTML, rate-limit
@@ -333,6 +347,9 @@ export function createSSEStream(options = {}) {
 
           reqLogger?.appendConvertedChunk?.(output);
           controller.enqueue(sharedEncoder.encode(output));
+          // The upstream's own terminator was just forwarded: flush() must not add a
+          // second one (every passthrough stream used to end in two).
+          if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") streamDoneSent = true;
           // Responses clients (codex CLI) close on response.completed instead of [DONE]
           if (responsesTerminal) finalizeStream();
           continue;

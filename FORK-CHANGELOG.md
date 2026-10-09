@@ -6,21 +6,141 @@ Kept out of the upstream `CHANGELOG.md` on purpose: upstream rewrites the top of
 that file on every release, so an entry there would conflict on 100% of upgrades.
 See [UPGRADE.md](UPGRADE.md) for how the fork is carried forward.
 
-## Unreleased (on top of v0.5.95)
+## Unreleased (on top of v0.5.104)
 
 ### Features
 
-#### Claude Code CLI 2.1.285, and a Jenkins job
+#### Claude Code CLI 2.1.301, and a Jenkins job
 
-The image's `CLAUDE_CODE_VERSION` moves from 2.1.281 to 2.1.285 (npm `latest`; the
-`stable` tag is 2.1.280). `Jenkinsfile` builds and pushes through the shared
+The image's `CLAUDE_CODE_VERSION` moves from 2.1.281 to 2.1.301 (npm `latest`; the
+`stable` tag is 2.1.292). `Jenkinsfile` builds and pushes through the shared
 library with `deployToK8s: false`; the Kubernetes-Application tag stays manual.
 Not changed: `CLAUDE_CLI_VERSION` in `open-sse/providers/shared.js` (the plain
 `claude` provider's user-agent) is still 2.1.281, and the `claude-cli` code cites
-behaviour measured on 2.1.281 — neither re-checked against 2.1.285, except
-`--json-schema` (see Fixes).
+behaviour measured on 2.1.281 — neither re-checked against 2.1.301, except
+`--json-schema` and the rate-limit events (see Fixes), which were read from, and run
+against, the 2.1.301 binary (the rate-limit schema is the same as on 2.1.295).
 
 ### Fixes
+
+#### A failure inside an HTTP 200 now falls through to the next model
+
+kimchi answers a model whose provider has no credits left with
+`{"error": "the provider for model … has exhausted its credits…"}` — as a plain 402,
+which already fell back, but also as the body (or first SSE frame) of a **200**. The
+status was 200, so nothing downstream saw a failure: the error text reached the client
+as the reply, account fallback and the combo never moved on, and an agent client (Hermes)
+simply stopped.
+
+`open-sse/utils/upstreamBodyError.js` reads such a failure out of the body — a bare
+`{error}` JSON, an error as the first SSE frame, `event: error`, or a bare JSON error
+behind an SSE content-type — and gives it the status it stands for (a status in the body
+wins; credits gone → 402, rate/capacity → 429, bad key → 401, else 502), so the ordinary
+error path takes over. Non-streaming: `nonStreamingHandler.js`; streaming:
+`guardStreamHead()` in `chatCore.js` reads the head of the stream before anything is sent
+and replays it untouched when it is healthy. It holds the stream for a short window after
+its first frame (`STREAM_ERROR_HOLD_MS`, default 500 ms, `0` = decide on the first frame;
+released early at 4 KB), so an error arriving right behind the first content still fails
+over — nothing has reached the client yet. The price is up to that much first-token
+latency on every stream. The forced-SSE→JSON path classifies the same way (it used to drop
+a bare-string error's text).
+
+Not fixed, and cannot be: an error that arrives *after* the window, once content is on its
+way to the client. Taking it back and re-asking another model would hand the client two
+answers glued together (continuing from the partial answer would be the alternative; not
+built). Such an error now goes out as a standard `{error:{message,type,code}}` frame — a
+bare-string `{"error":"…"}` used to be passed through as it came, unreadable to OpenAI
+clients. Also fixed in passing: every passthrough stream ended in **two** `data: [DONE]`
+(the upstream's was forwarded without noting it, and `flush()` added another).
+Fail-open throughout: anything that is not clearly an error is passed on as it was.
+
+#### Fork cron keepalive and upstream's anchored schedules coexist (v0.5.104)
+
+v0.5.104 added its own wall-clock auto-ping: `settings.<provider>AutoPing.schedules`,
+`quotaPingSchedule.js`, a schedule modal. It overlaps the fork's cron keepalive but
+uses a different setting key, so both are kept, per account, in one tick
+(`quotaAutoPing.js`): `cron` runs for any handler; `schedules` and the reset-based
+ping only for a handler with a usage endpoint (`pingConnection` reads usage, which the
+claude-cli handler has none of). The scheduler stays on if either is configured
+(`hasAnyAutoPingEnabled`, `initializeApp`). Worth deciding later whether to retire the
+fork's cron in favour of upstream's schedules, which would remove a conflict surface.
+
+#### A Claude Code CLI provider that is switched off is skipped in a combo
+
+A no-auth provider has no credential to be missing, so `getProviderCredentials`
+stood in a synthetic "Public" connection whenever it found no *active* connection.
+claude-cli's accounts are real rows, so switching every one of them off left zero
+active rows, which read as "no accounts at all" — and the stand-in answered, so a
+combo kept sending to a provider the operator had turned off while every other
+provider was skipped. The stand-in is now used only when the provider has no
+connection rows at all; rows that are all off mean the provider is off (no
+credentials, so the combo moves on). An account added but not yet logged in
+(inactive, `testStatus: pending`) was never switched on and does not count as off.
+
+#### An account that is out of quota is not asked again, and the combo moves on
+
+The CLI reports a spent subscription as ordinary content ("You've hit your limit"),
+so the router saw a 200 and kept sending to it — and, at best, a 502 that locked the
+model for 30 seconds before the next attempt. The CLI does say so in a form that can
+be read (from the 2.1.295 binary, unchanged on 2.1.301): a `rate_limit_event` whose `rate_limit_info.status`
+is `rejected` (with `resetsAt` and the `rateLimitType` of the window), and a line it
+composes itself ("You've hit your …", "You're out of usage credits", "Your org is out
+of usage") as a synthetic assistant message and in an error result.
+
+- Either is read as "out of quota". The account is blocked until the reset the CLI
+  gave, or for `CLAUDE_CLI_QUOTA_RETRY_MS` (10 minutes) when it gave none, which is
+  how often it is tried again. Per account (config directory or token digest), in
+  memory; a block never shortens a longer one.
+- While blocked, nothing is spawned: the request is answered **429** with the reset
+  time at once. `parseError` hands the reset to `markAccountUnavailable`, which locks
+  the model on that account until then (capped at 30 minutes, so the account is
+  probed again at least that often — a probe of a rejected account is instant and
+  costs no model call), and the combo goes on to its next model.
+- The request that finds out is answered 429 too, not as a stream carrying the limit
+  message: the response is held back until the CLI has said enough to tell — its
+  rate-limit report at the start of the turn ("allowed"), else the first content or
+  the result — and at most `CLAUDE_CLI_QUOTA_PROBE_WAIT_MS` (10 s). Past that a 200
+  goes out, and a limit found later only blocks the requests that follow.
+- Only the CLI's own message counts: the line must start the text and be short (an
+  error result can carry the model's own answer — a `max_tokens` cut comes back
+  `is_error` — which may say "you've reached your goal"); a model describing limits
+  in its own words, an `allowed_warning`, a plain API 429/529, and a window that
+  paid extra usage is covering (`isUsingOverage` / `overageStatus` allowed) do not
+  block the account.
+- A model-scoped window (`seven_day_opus`, `seven_day_sonnet`) blocks only that model
+  family on the account; `five_hour` / `seven_day` block all of it. The block is in
+  memory (a restart clears it) and is not shown in the dashboard.
+- **Not observed:** an account actually being spent. The events above are read from
+  the binary's schema and exercised with a stand-in CLI, not captured from a real
+  exhausted subscription.
+
+#### `-low` in a Codex model id is the effort, and wins over the client's
+
+`cx/gpt-6-luna-low` strips `-low` from the model and uses it as `reasoning.effort` —
+but only when the client sent no effort. Agent clients always send one, so the
+suffix was thrown away and the model ran at the client's default (medium).
+The `(low)` spelling already won over the client (thinkingUnified); the dash
+spelling now does too: effort in the model id > `reasoning.effort` >
+`reasoning_effort` > default. The dash form takes none/minimal/low/medium/high/xhigh;
+`max` is written `(max)`.
+
+#### Effort can be set per model
+
+The provider-level "Thinking" selector is one value for all of a provider's models,
+and only fills in an effort the client did not send. Each model on the provider's
+page now has an **Effort** selector (the levels that model takes, from
+`getThinkingLevels`), stored as `providerThinking[provider].models[modelId]` next to
+the provider-wide `mode` (saving one no longer drops the other). It is the
+operator's choice for that model, so it is applied **over** the client's effort
+(`open-sse/services/modelEffort.js`); an effort written into the request's model id
+still wins over it. A level the model does not take is ignored rather than sent. It
+is written where the client's format reads it: `reasoning_effort` /
+`reasoning.effort` for OpenAI-shaped bodies, `output_config.effort` for Claude-shaped
+ones; Gemini-shaped bodies are left alone (a thinking budget, not a named effort).
+The selector is not shown for the Claude Code CLI provider, which has no effort to set.
+The provider-wide "Thinking" mode is unchanged and still only fills a gap — and it
+still writes `reasoning_effort` whatever the client's format, which a native Claude
+passthrough sends upstream as-is.
 
 #### `response_format` works on the Claude Code CLI provider
 
