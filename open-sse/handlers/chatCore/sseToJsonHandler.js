@@ -1,6 +1,7 @@
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
 import { createErrorResult } from "../../utils/error.js";
+import { bodyErrorFromJson } from "../../utils/upstreamBodyError.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
 import { openAICompletionToClaudeMessage } from "../../translator/concerns/claudeMessage.js";
@@ -303,14 +304,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       // Structured error chunks may carry the real upstream status (e.g. the
       // Qoder executor emits status 403 for billing envelopes). Preserve it so
       // the account loop locks/falls back on the right status instead of a
-      // generic 502. Anything outside 400-599 still maps to 502.
-      const upstreamStatus = Number(parsed.error.status);
-      const status = Number.isInteger(upstreamStatus) && upstreamStatus >= 400 && upstreamStatus <= 599
-        ? upstreamStatus
-        : HTTP_STATUS.BAD_GATEWAY;
+      // generic 502. Anything outside 400-599 is classified by its wording
+      // (credits gone → 402, rate/capacity → 429) and otherwise maps to 502. The
+      // error may also be a bare string, which has no `.message` to read.
+      const failure = bodyErrorFromJson({ error: parsed.error });
       return createErrorResult(
-        status,
-        parsed.error.message || "Upstream SSE stream failed"
+        failure?.status || HTTP_STATUS.BAD_GATEWAY,
+        failure?.message || "Upstream SSE stream failed"
       );
     }
 

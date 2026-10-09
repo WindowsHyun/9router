@@ -21,6 +21,12 @@ export const FORK_BRANCH = "master";
  * they only need to still be present after an upgrade.
  */
 export const ADDED_FILES = [
+  // a failure the upstream put inside an HTTP 200 → real status → fallback
+  "open-sse/utils/upstreamBodyError.js",
+  "tests/unit/upstream-body-error.test.js",
+  "tests/unit/combo-body-error-fallback.test.js",
+  // per-model reasoning effort (applied over the client's; see FORK-CHANGELOG)
+  "open-sse/services/modelEffort.js",
   // claude-cli provider
   "open-sse/config/claudeCli.js",
   "open-sse/executors/claude-cli.js",
@@ -116,8 +122,18 @@ export const PATCHED_FILES = [
   },
   {
     path: "open-sse/handlers/chatCore/sseToJsonHandler.js",
-    markers: ["translateNonStreamingResponse"],
-    hint: "Fork replaces the final `const finalBody = ...` ternary with an if/else that also converts for non-OpenAI clients. Keep the fork branch; upstream's version is the block it replaced. This fix is a candidate to send upstream.",
+    markers: ["translateNonStreamingResponse", "bodyErrorFromJson"],
+    hint: "Fork replaces the final `const finalBody = ...` ternary with an if/else that also converts for non-OpenAI clients. Keep the fork branch; upstream's version is the block it replaced. This fix is a candidate to send upstream. The `parsed.error` branch also goes through bodyErrorFromJson (upstreamBodyError.js): it reads a bare-string error and maps credit/rate wording to 402/429; keep that over upstream's `Number(parsed.error.status)` version.",
+  },
+  {
+    path: "open-sse/utils/stream.js",
+    markers: ["bodyErrorFromJson", "streamDoneSent = true"],
+    hint: "Passthrough mode: (1) forwarding the upstream's own `data: [DONE]` sets streamDoneSent so flush() does not append a second one; (2) a bare-string `{error:\"…\"}` frame is rewritten to the standard `{error:{message,type,code}}` shape via buildErrorBody. Both are small additions inside the existing passthrough branch; keep upstream's surrounding code.",
+  },
+  {
+    path: "open-sse/handlers/chatCore/nonStreamingHandler.js",
+    markers: ["bodyErrorFromJson"],
+    hint: "Right after unwrapClineEnvelope, a `{error}` body in an HTTP 200 is turned into createErrorResult(status) so account/combo fallback sees it. Must stay before onRequestSuccess (which clears the account's error state).",
   },
   {
     path: "src/shared/services/quotaAutoPing.js",
@@ -220,13 +236,18 @@ export const PATCHED_FILES = [
   },
   {
     path: "open-sse/handlers/chatCore.js",
-    markers: ["injectAgentSkills", "agentSkills"],
-    hint: "Takes `agentSkills` in the options object and injects them after the caveman/ponytail block, just before dispatch. Deliberately NOT gated on tokenSaverEnabled: a skill changes how the model answers and costs tokens rather than saving them.",
+    markers: ["injectAgentSkills", "agentSkills", "applyModelEffort", "guardStreamHead"],
+    hint: "Takes `agentSkills` in the options object and injects them after the caveman/ponytail block, just before dispatch. Deliberately NOT gated on tokenSaverEnabled: a skill changes how the model answers and costs tokens rather than saving them. Also: just before buildOnStreamComplete, guardStreamHead() reads the head of a streaming 200 and returns createErrorResult(status) when it opens with an error frame — it must come before handleStreamingResponse, whose first act is onRequestSuccess (clears the account's error state).",
   },
   {
     path: "src/sse/handlers/chat.js",
     markers: ["getEnabledAgentSkills"],
-    hint: "Loads the enabled skills per request (a local SQLite read, not a network fetch) and passes them to handleChatCore. The .catch(() => []) is deliberate — a skill must never be the reason a completion fails.",
+    hint: "Loads the enabled skills per request (a local SQLite read, not a network fetch) and passes them to handleChatCore. loadAgentSkills() is a try/catch on purpose — a skill must never be the reason a completion fails, and a storage module without the function (an upstream test's mock) throws before a .catch could see it.",
+  },
+  {
+    path: "open-sse/executors/codex.js",
+    markers: ["effort named in the model id"],
+    hint: "An effort written into the model id (`gpt-6-luna-low`) wins over the client's reasoning / reasoning_effort, like the `(low)` spelling does. Upstream only used the suffix when the client sent no effort, which an agent client never does.",
   },
   {
     path: "src/app/(dashboard)/dashboard/skills/page.js",
@@ -304,6 +325,15 @@ export const FORK_TESTS = [
   "unit/api-key-usage-series.test.js",
   "unit/api-key-usage-csv.test.js",
   "unit/usage-stats-no-raw-keys.test.js",
+  "unit/claude-cli-disabled-provider.test.js",
+  "unit/claude-cli-quota-exhausted.test.js",
+  "unit/codex-effort-suffix.test.js",
+  "unit/model-effort.test.js",
+  "unit/model-effort-ui.test.js",
+  "unit/model-effort-save-apply.test.js",
+  "unit/claude-cli-combo-e2e.test.js",
+  "unit/upstream-body-error.test.js",
+  "unit/combo-body-error-fallback.test.js",
 ];
 
 /** Live tests; skipped unless REAL_CLI_TESTS=1 and Claude Code is installed. */

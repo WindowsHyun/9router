@@ -25,6 +25,7 @@
  * started has none, and falls back to what this server counted.
  */
 import crypto from "node:crypto";
+import { CLAUDE_CLI_QUOTA_RETRY_MS } from "../config/claudeCli.js";
 
 // Survives Next's module re-evaluation the way the rest of the codebase does.
 const store = (globalThis.__claudeCliRateLimits ??= new Map());
@@ -65,6 +66,7 @@ export function rateLimitWindows(psd) {
 /** Only for tests: forget everything recorded so far. */
 export function resetRateLimitWindows() {
   store.clear();
+  blocks.clear();
   cacheStore.clear();
 }
 
@@ -145,4 +147,91 @@ export function windowsToQuotas(windows) {
     if (quota) quotas[name] = quota;
   }
   return Object.keys(quotas).length ? quotas : null;
+}
+
+// ─── Out of quota ────────────────────────────────────────────────────────────
+//
+// The CLI says so in two ways, both read from its own schema (2.1.295): a
+// `rate_limit_event` whose `rate_limit_info.status` is "rejected" (with
+// `resetsAt`, unix seconds, and the `rateLimitType` of the window), and a line
+// it composes itself — "You've hit your …", "You're out of usage credits", "Your
+// org is out of usage" — as a synthetic assistant message and in an error result.
+// Neither is an HTTP status, so a request that hit it used to be delivered as an
+// ordinary answer and a combo never moved on.
+
+const blocks = (globalThis.__claudeCliQuotaBlocks ??= new Map());
+
+// Anchored to the start and kept short: the CLI composes these lines whole, and an
+// error result can instead carry the model's own answer — max_tokens and the token
+// ceiling come back is_error:true with that text — which may say "you've reached
+// your goal" without being a limit.
+const LIMIT_LINE = /^s*(?:you['’]ve (?:hit|reached) your|you['’]re out of (?:extra )?usage|your org is out of usage|your seat type doesn['’]t include)/i;
+const LIMIT_LINE_MAX_CHARS = 300;
+const isLimitLine = (text) => typeof text === "string" && text.length <= LIMIT_LINE_MAX_CHARS && LIMIT_LINE.test(text);
+
+const textOf = (message) => (Array.isArray(message?.content) ? message.content : [])
+  .map((block) => (block?.type === "text" ? block.text : "")).join(" ");
+
+const msFromSeconds = (value) => {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null;
+};
+
+/**
+ * Whether one stream-json event says the account is out of quota.
+ * @returns {{ resetsAtMs: number | null } | null} the reset, when the CLI gave one
+ */
+export function quotaExhaustion(event) {
+  if (!event || typeof event !== "object") return null;
+  if (event.type === "rate_limit_event") {
+    const info = event.rate_limit_info;
+    if (info?.status !== "rejected") return null;
+    // While paid extra usage covers the overflow nothing is cut off, whatever the
+    // subscription window says (schema: overageStatus allowed / allowed_warning).
+    if (info.isUsingOverage === true || info.overageStatus === "allowed" || info.overageStatus === "allowed_warning") return null;
+    const window = info.rateLimitType ? info.unifiedWindows?.[info.rateLimitType] : null;
+    const exhaustion = { resetsAtMs: msFromSeconds(info.resetsAt) ?? msFromSeconds(window?.resetsAt) };
+    // A window that belongs to one model family (seven_day_opus, seven_day_sonnet)
+    // takes only that family out; the rest of the account still works.
+    const scope = /^seven_day_(opus|sonnet)$/.exec(String(info.rateLimitType || ""))?.[1];
+    if (scope) exhaustion.scope = scope;
+    return exhaustion;
+  }
+  // Only the CLI's own message: a model describing limits in its own words is
+  // not the CLI reporting one.
+  if (event.type === "assistant" && event.message?.model === "<synthetic>") {
+    return isLimitLine(textOf(event.message).trim()) ? { resetsAtMs: null } : null;
+  }
+  if (event.type === "result" && event.is_error === true) {
+    const lines = [event.result, ...(Array.isArray(event.errors) ? event.errors : [])];
+    return lines.some((line) => isLimitLine(line)) ? { resetsAtMs: null } : null;
+  }
+  return null;
+}
+
+// Keyed like the windows; the host's own login has no key, and is one account.
+const blockKey = (psd) => rateLimitAccountKey(psd) || "host";
+
+/**
+ * Do not ask this account again until its reset (or the retry interval, if
+ * unknown). Never shortens a block. `scope` ("opus" / "sonnet") limits it to the
+ * models of that family; without one it covers the whole account.
+ */
+export function markQuotaExhausted(psd, untilMs = null, scope = null) {
+  const until = Number.isFinite(untilMs) && untilMs > Date.now() ? untilMs : Date.now() + CLAUDE_CLI_QUOTA_RETRY_MS;
+  const key = scope ? `${blockKey(psd)}#${scope}` : blockKey(psd);
+  blocks.set(key, Math.max(blocks.get(key) || 0, until));
+  return blocks.get(key);
+}
+
+/** When the account (for this model) may be asked again, or 0 when it may be asked now. */
+export function quotaBlockedUntil(psd, model = null) {
+  const base = blockKey(psd);
+  let until = 0;
+  for (const [key, value] of blocks) {
+    if (value <= Date.now()) { blocks.delete(key); continue; }
+    if (key === base) until = Math.max(until, value);
+    else if (key.startsWith(`${base}#`) && model && String(model).includes(key.slice(base.length + 1))) until = Math.max(until, value);
+  }
+  return until;
 }
