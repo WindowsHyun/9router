@@ -1282,6 +1282,11 @@
     "format": "openai",
     "authType": "cookie"
   },
+  "runcrate": {
+    "baseUrl": "https://api.runcrate.ai/v1/chat/completions",
+    "validateUrl": "https://www.runcrate.ai/api/v1/billing/balance",
+    "format": "openai"
+  },
   "claude-cli": {
     "baseUrl": "claude-cli://stdio",
     "format": "openai",
