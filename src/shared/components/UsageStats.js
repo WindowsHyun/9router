@@ -15,6 +15,8 @@ import Card from "./Card";
 import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/OverviewCards";
 import UsageTable, { fmt, fmtTime } from "@/app/(dashboard)/dashboard/usage/components/UsageTable";
 import dynamic from "next/dynamic";
+import { groupDataByKey, groupApiKeysByCombo } from "@/shared/utils/usageGrouping";
+export { groupDataByKey, groupApiKeysByCombo };
 // Lazy-load: keeps @xyflow/react and recharts out of the initial bundle
 const ProviderTopology = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/ProviderTopology"), { ssr: false });
 const UsageChart = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/UsageChart"), { ssr: false });
@@ -88,7 +90,7 @@ function RecentRequests({ requests = [] }) {
   );
 }
 
-function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
+export function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
   return Object.entries(dataMap || {})
     .map(([key, data]) => {
       const totalTokens = (data.promptTokens || 0) + (data.completionTokens || 0);
@@ -115,47 +117,6 @@ function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
     });
 }
 
-function getGroupKey(item, keyField) {
-  switch (keyField) {
-    case "rawModel": return item.rawModel || "Unknown Model";
-    case "accountName": return item.accountName || `Account ${item.connectionId?.slice(0, 8)}...` || "Unknown Account";
-    case "keyName": return item.apiKeyMasked ? `${item.keyName} (${item.apiKeyMasked})` : item.keyName || "Unknown Key";
-    case "endpoint": return item.endpoint || "Unknown Endpoint";
-    default: return item[keyField] || "Unknown";
-  }
-}
-
-function groupDataByKey(data, keyField) {
-  if (!Array.isArray(data)) return [];
-  const groups = {};
-  data.forEach((item) => {
-    const gk = getGroupKey(item, keyField);
-    if (!groups[gk]) {
-      groups[gk] = {
-        groupKey: gk,
-        summary: { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, totalTokens: 0, cost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, lastUsed: null, pending: 0 },
-        items: [],
-      };
-    }
-    const s = groups[gk].summary;
-    s.requests += item.requests || 0;
-    s.promptTokens += item.promptTokens || 0;
-    s.completionTokens += item.completionTokens || 0;
-    s.cachedTokens += item.cachedTokens || 0;
-    s.totalTokens += item.totalTokens || 0;
-    s.cost += item.cost || 0;
-    s.inputCost += item.inputCost || 0;
-    s.cachedCost += item.cachedCost || 0;
-    s.outputCost += item.outputCost || 0;
-    s.pending += item.pending || 0;
-    if (item.lastUsed && (!s.lastUsed || new Date(item.lastUsed) > new Date(s.lastUsed))) {
-      s.lastUsed = item.lastUsed;
-    }
-    groups[gk].items.push(item);
-  });
-  return Object.values(groups);
-}
-
 const MODEL_COLUMNS = [
   { field: "rawModel", label: "Model" },
   { field: "provider", label: "Provider" },
@@ -171,13 +132,48 @@ const ACCOUNT_COLUMNS = [
   { field: "lastUsed", label: "Last Used", align: "right" },
 ];
 
-const API_KEY_COLUMNS = [
+export const API_KEY_COLUMNS = [
   { field: "keyName", label: "API Key Name" },
+  { field: "combo", label: "Combo" },
   { field: "rawModel", label: "Model" },
   { field: "provider", label: "Provider" },
   { field: "requests", label: "Requests", align: "right" },
   { field: "lastUsed", label: "Last Used", align: "right" },
 ];
+
+/**
+ * The API-key table's cells, at module scope so the API Key Usage page renders
+ * the same table rather than a copy that drifts from this one.
+ */
+// "—" is a direct model call (or traffic recorded before combos were).
+const comboLabel = (combo) => combo || "—";
+
+export function renderApiKeySummaryCells(group) {
+  // Which combos this key called, at a glance without expanding the group.
+  const combos = [...new Set(group.items.map((i) => i.combo).filter(Boolean))];
+  return (
+    <>
+      <td className="px-6 py-3 text-text-muted">{combos.length ? combos.join(", ") : "—"}</td>
+      <td className="px-6 py-3 text-text-muted">—</td>
+      <td className="px-6 py-3 text-text-muted">—</td>
+      <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
+      <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+    </>
+  );
+}
+
+export function renderApiKeyDetailCells(item) {
+  return (
+    <>
+      <td className="px-6 py-3 font-medium font-mono text-xs">{item.apiKeyMasked || item.keyName}</td>
+      <td className="px-6 py-3">{item.combo ? <Badge variant="primary" size="sm">{item.combo}</Badge> : comboLabel(item.combo)}</td>
+      <td className="px-6 py-3">{item.rawModel}</td>
+      <td className="px-6 py-3"><Badge variant="neutral" size="sm">{item.provider}</Badge></td>
+      <td className="px-6 py-3 text-right">{fmt(item.requests)}</td>
+      <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(item.lastUsed)}</td>
+    </>
+  );
+}
 
 const ENDPOINT_COLUMNS = [
   { field: "endpoint", label: "Endpoint" },
@@ -386,26 +382,11 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       case "apiKey": {
         return {
           columns: API_KEY_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byApiKey, {}, sortBy, sortOrder), "keyName"),
+          groupedData: groupApiKeysByCombo(sortData(stats.byApiKey, {}, sortBy, sortOrder)),
           storageKey: "usage-stats:expanded-apikeys",
           emptyMessage: "No API key usage recorded yet.",
-          renderSummaryCells: (group) => (
-            <>
-              <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
-            </>
-          ),
-          renderDetailCells: (item) => (
-            <>
-              <td className="px-6 py-3 font-medium font-mono text-xs">{item.apiKeyMasked || item.keyName}</td>
-              <td className="px-6 py-3">{item.rawModel}</td>
-              <td className="px-6 py-3"><Badge variant="neutral" size="sm">{item.provider}</Badge></td>
-              <td className="px-6 py-3 text-right">{fmt(item.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(item.lastUsed)}</td>
-            </>
-          ),
+          renderSummaryCells: renderApiKeySummaryCells,
+          renderDetailCells: renderApiKeyDetailCells,
         };
       }
       case "endpoint":

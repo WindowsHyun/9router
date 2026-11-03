@@ -206,8 +206,37 @@ export default function UsageTable({
                   {renderSummaryCells(group)}
                   <ValueCells item={group.summary} viewMode={viewMode} isSummary />
                 </tr>
+                {/* Second level (e.g. key → combo), each expandable on its own */}
+                {expanded.has(group.groupKey) && group.subgroups?.map((sub) => {
+                  const subKey = `${group.groupKey}\u0000${sub.groupKey}`;
+                  return (
+                    <Fragment key={subKey}>
+                      <tr
+                        className="group-subsummary cursor-pointer bg-bg-subtle/10 hover:bg-bg-subtle/40 transition-colors"
+                        onClick={() => toggleGroup(subKey)}
+                      >
+                        <td className="py-3 pl-12 pr-6">
+                          <div className="flex items-center gap-2">
+                            <span className={`material-symbols-outlined text-[16px] text-text-muted transition-transform ${expanded.has(subKey) ? "rotate-90" : ""}`}>
+                              chevron_right
+                            </span>
+                            <span className="font-medium">{sub.groupKey}</span>
+                          </div>
+                        </td>
+                        {renderSummaryCells(sub)}
+                        <ValueCells item={sub.summary} viewMode={viewMode} isSummary />
+                      </tr>
+                      {expanded.has(subKey) && sub.items.map((item) => (
+                        <tr key={`detail-${item.key}`} className="group-detail hover:bg-bg-subtle/20 transition-colors">
+                          {renderDetailCells(item)}
+                          <ValueCells item={item} viewMode={viewMode} />
+                        </tr>
+                      ))}
+                    </Fragment>
+                  );
+                })}
                 {/* Detail rows */}
-                {expanded.has(group.groupKey) && group.items.map((item) => (
+                {expanded.has(group.groupKey) && !group.subgroups && group.items.map((item) => (
                   <tr
                     key={`detail-${item.key}`}
                     className="group-detail hover:bg-bg-subtle/20 transition-colors"

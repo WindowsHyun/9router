@@ -43,8 +43,29 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
     const providerId = resolveProviderId(provider);
 
-    // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
-    if (FREE_PROVIDERS[providerId]?.noAuth) {
+    // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings).
+    //
+    // Skipped when the provider actually has connection rows. For a provider
+    // whose "account" is a local resource — a Claude Code config directory, a
+    // bridge endpoint — several accounts are meaningful, and returning the
+    // single synthetic "Public" connection here made multi-account impossible:
+    // the real rows below were never reached, so neither was per-account
+    // fallback or rotation.
+    //
+    // And not when those rows exist but are all switched off: that is an operator
+    // turning the provider off, and the stand-in would keep answering for it —
+    // every other provider is skipped in a combo, this one kept being sent to.
+    const isNoAuth = Boolean(FREE_PROVIDERS[providerId]?.noAuth);
+    const noAuthRows = isNoAuth ? await getProviderConnections({ provider: providerId }) : [];
+    // An account whose login has not finished (inactive, testStatus "pending" —
+    // what "Add account" creates) was never switched on, so it is not an operator
+    // turning the provider off and does not count.
+    const switchedOff = noAuthRows.filter((c) => c.isActive === false && c.testStatus !== "pending");
+    if (isNoAuth && noAuthRows.length > 0 && switchedOff.length > 0 && !noAuthRows.some((c) => c.isActive !== false)) {
+      log.warn("AUTH", `${provider} | every account is switched off — skipping`);
+      return null;
+    }
+    if (isNoAuth && !noAuthRows.some((c) => c.isActive !== false)) {
       const settings = await getSettings();
       const override = (settings.providerStrategies || {})[providerId] || {};
       const strategy = override.rotateStrategy || "none";
