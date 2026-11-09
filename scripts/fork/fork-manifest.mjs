@@ -278,7 +278,7 @@ export const PATCHED_FILES = [
     path: "src/shared/components/UsageStats.js",
     markers: [
       "export function sortData",
-      "export function groupDataByKey",
+      "export { groupDataByKey",
       "export const API_KEY_COLUMNS",
       "renderApiKeySummaryCells",
       "renderApiKeyDetailCells",
